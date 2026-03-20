@@ -6,11 +6,12 @@ let firestoreInstance = null;
 
 function resolveServiceAccountPath() {
   const configuredPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  const backendRoot = path.resolve(__dirname, '..');
 
   if (configuredPath) {
     const absolutePath = path.isAbsolute(configuredPath)
       ? configuredPath
-      : path.resolve(__dirname, configuredPath);
+      : path.resolve(backendRoot, configuredPath);
 
     if (fs.existsSync(absolutePath)) {
       return absolutePath;
@@ -20,7 +21,7 @@ function resolveServiceAccountPath() {
   }
 
   // Default to repository root firebase-service-key.json
-  const fallbackPath = path.resolve(__dirname, '../../firebase-service-key.json');
+  const fallbackPath = path.resolve(backendRoot, '../firebase-service-key.json');
   if (fs.existsSync(fallbackPath)) {
     return fallbackPath;
   }

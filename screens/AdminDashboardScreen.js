@@ -535,6 +535,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const { unreadCount, sendNotificationToUser, refreshNotifications } = useNotifications();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
+  const lastFocusRefreshRef = useRef(0);
   
   const medicalReportModalHeight = useMemo(() => {
     const base = Number.isFinite(windowHeight) && windowHeight > 0 ? windowHeight : 700;
@@ -1222,9 +1223,9 @@ export default function AdminDashboardScreen({ navigation, route }) {
             if (otherStr) allergiesSet.add(otherStr);
           }
           
-          // Get most recent vitals
-          if (shift.vitals && !latestVitals) {
-            latestVitals = shift.vitals;
+          // Get most recent vitals (nurse-recorded takes priority over booking vitals)
+          if ((shift.nurseVitals || shift.vitals) && !latestVitals) {
+            latestVitals = shift.nurseVitals || shift.vitals;
           }
         });
         
@@ -3931,8 +3932,8 @@ export default function AdminDashboardScreen({ navigation, route }) {
     React.useCallback(() => {
       // Throttle focus refreshes to prevent excessive API calls
       const now = Date.now();
-      if (!window.lastFocusRefresh || now - window.lastFocusRefresh > 30000) { // Max once per 30 seconds
-        window.lastFocusRefresh = now;
+      if (!lastFocusRefreshRef.current || now - lastFocusRefreshRef.current > 30000) { // Max once per 30 seconds
+        lastFocusRefreshRef.current = now;
         
         const refreshData = async () => {
           await refreshAppointments();

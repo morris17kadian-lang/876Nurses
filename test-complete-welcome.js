@@ -99,7 +99,7 @@ async function testCompleteWelcomeEmail() {
                 </tr>
                 <tr>
                   <td align="center" style="padding:0 40px 40px 40px;">
-                    <a href="876nurses://login" style="display:inline-block;background:#2f62d7;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:12px;font-weight:800;font-size:15px;">Open App</a>
+                    <a href="nurses876://" style="display:inline-block;background:#2f62d7;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:12px;font-weight:800;font-size:15px;">Open App</a>
                   </td>
                 </tr>
               </table>

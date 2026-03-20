@@ -1966,12 +1966,23 @@ class ApiService {
       
       if (!userId) throw new Error('UserId is required for notification');
 
+      // Firestore rejects documents containing `undefined` values.
+      // Strip them from the nested data object before writing.
+      const sanitizeData = (obj) => {
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj ?? null;
+        return Object.fromEntries(
+          Object.entries(obj)
+            .filter(([, v]) => v !== undefined)
+            .map(([k, v]) => [k, sanitizeData(v)])
+        );
+      };
+
       const docData = {
         userId,
         title,
         message,
         type: type || 'system',
-        data: data || {},
+        data: sanitizeData(data || {}),
         isRead: false,
         sentAt: sentAt || new Date().toISOString(),
         createdAt: serverTimestamp(),

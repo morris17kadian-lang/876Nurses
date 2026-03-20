@@ -773,55 +773,37 @@ export const NotificationProvider = ({ children }) => {
   const sendNotificationToUser = async (targetUserId, targetRole, title, message, data = {}) => {
     try {
       let backendSuccess = false;
-      const canWriteFirebaseNotifications = user?.role === 'admin' || user?.isAdmin === true;
-      
-      // Try to send through backend API first
+
+      // All authenticated users can create notifications in Firestore per security rules.
+      // The previous admin-only gate meant nurse→nurse notifications (e.g. backup coverage
+      // requests) were only written to AsyncStorage on the sender's device and never reached
+      // the recipient on their own device.
       try {
-        // Preparing to send notification
-        const notificationPayload = {
+        const result = await ApiService.sendNotification({
           userId: targetUserId,
           title,
           message,
           type: data.type || 'general',
           data,
-          sendPush: true
-        };
-        
-        // Sending notification payload
-        try {
-          if (canWriteFirebaseNotifications) {
-            // Admins can write to /notifications per Firestore rules
-            const result = await ApiService.sendNotification({
-              userId: targetUserId,
-              title,
-              message,
-              type: data.type || 'general',
-              data,
-              sentAt: new Date().toISOString()
-            });
-            
-            if (result && result.id) {
-              // Notification sent via Firebase - don't save locally to avoid duplicates
-              backendSuccess = true;
-              return result;
-            }
-          }
-        } catch (apiError) {
-          // Non-fatal; fall back to local storage
-          console.warn('Failed to send notification via Firebase (fallback to local):', apiError?.message || apiError);
-          // Fallback to local storage if Firebase fails
+          sentAt: new Date().toISOString()
+        });
+
+        if (result && result.id) {
+          backendSuccess = true;
+          return result;
         }
       } catch (apiError) {
-        // Error preparing notification payload
+        // Non-fatal; fall back to local storage
+        console.warn('Failed to send notification via Firebase (fallback to local):', apiError?.message || apiError);
       }
-      
-      // Only save locally if backend failed (to avoid duplicates)
+
+      // Only save locally if Firestore write failed (to avoid duplicates)
       if (backendSuccess) {
         return null;
       }
-      
+
       const targetUserKey = `${STORAGE_KEY}_${targetUserId}`;
-      
+
       const existingNotifications = await AsyncStorage.getItem(targetUserKey);
       let notificationList = existingNotifications ? JSON.parse(existingNotifications) : [];
       

@@ -57,7 +57,27 @@ export default function SplashScreen({ onFinish }) {
   const [forgotPasswordMessage, setForgotPasswordMessage] = useState('');
   const [sentToEmail, setSentToEmail] = useState('');
 
-  const { login, signup, resetPassword } = useAuth();
+  // Email verification (6-digit code) modal
+  const [showVerifyEmail, setShowVerifyEmail] = useState(false);
+  const [verifyEmailAddress, setVerifyEmailAddress] = useState('');
+  const VERIFICATION_CODE_LENGTH = 6;
+  const DEFAULT_VERIFY_EMAIL_RESEND_SECONDS = 60;
+  const verificationCodeInputRefs = useRef([]);
+  const verifyEmailResendIntervalRef = useRef(null);
+  const [verificationCodeDigits, setVerificationCodeDigits] = useState(() =>
+    Array(VERIFICATION_CODE_LENGTH).fill('')
+  );
+  const [verifyEmailLoading, setVerifyEmailLoading] = useState(false);
+  const [verifyEmailMessage, setVerifyEmailMessage] = useState('');
+  const [verifyEmailResendSecondsLeft, setVerifyEmailResendSecondsLeft] = useState(0);
+
+  const {
+    login,
+    signup,
+    resetPassword,
+    requestEmailVerificationCode,
+    verifyEmailVerificationCode,
+  } = useAuth();
   
   // Animation values
   const fadeAnim = useRef(new Animated.Value(0)).current; // Start invisible for entrance animation
@@ -135,6 +155,33 @@ export default function SplashScreen({ onFinish }) {
       keyboardDidHideListener.remove();
     };
   }, []);
+
+  useEffect(() => {
+    // Cleanup any running countdown when the modal closes/unmounts.
+    if (showVerifyEmail) {
+      return;
+    }
+
+    if (verifyEmailResendIntervalRef.current) {
+      clearInterval(verifyEmailResendIntervalRef.current);
+      verifyEmailResendIntervalRef.current = null;
+    }
+  }, [showVerifyEmail]);
+
+  useEffect(() => {
+    if (!showVerifyEmail) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      const firstEmptyIndex = verificationCodeDigits.findIndex((d) => !d);
+      const indexToFocus =
+        firstEmptyIndex === -1 ? VERIFICATION_CODE_LENGTH - 1 : firstEmptyIndex;
+      verificationCodeInputRefs.current[indexToFocus]?.focus?.();
+    }, 250);
+
+    return () => clearTimeout(timeout);
+  }, [showVerifyEmail]);
 
   const loadSavedCredentials = async () => {
     try {
@@ -219,6 +266,48 @@ export default function SplashScreen({ onFinish }) {
           onFinish();
         }
       } else {
+        if (result?.needsEmailVerification) {
+          const verificationEmail = (result?.verificationEmail || '').toString().trim().toLowerCase();
+
+          Alert.alert(
+            'Verify Your Email',
+            verificationEmail
+              ? `We sent a 6-digit verification code to ${verificationEmail}. Enter it to verify your account before signing in.`
+              : 'We sent a 6-digit verification code to your email. Enter it to verify your account before signing in.',
+            [
+              {
+                text: 'Enter Code',
+                onPress: () => openVerifyEmailModal({ knownEmail: verificationEmail || undefined, identifierOverride: loginIdentifier }),
+              },
+              {
+                text: 'Resend Code',
+                onPress: async () => {
+                  const resolvedEmail = verificationEmail || (await resolveAccountEmail(loginIdentifier));
+                  if (!resolvedEmail) {
+                    return;
+                  }
+
+                  const sendResult = await requestEmailVerificationCode(resolvedEmail);
+                  if (sendResult?.success) {
+                    if (sendResult?.throttled) {
+                      const retry = sendResult?.retryAfterSeconds
+                        ? ` Please wait ${sendResult.retryAfterSeconds}s and try again.`
+                        : '';
+                      Alert.alert('Please Wait', `A code was recently sent.${retry}`);
+                    } else {
+                      Alert.alert('Code Sent', 'Check your inbox for your verification code.');
+                    }
+                  } else {
+                    Alert.alert('Error', sendResult?.error || 'Unable to send verification code. Please try again.');
+                  }
+                },
+              },
+              { text: 'Cancel', style: 'cancel' },
+            ]
+          );
+          return;
+        }
+
         Alert.alert('Sign In Failed', result?.error || 'Unable to sign in. Please try again.');
       }
     } catch (error) {
@@ -251,27 +340,74 @@ export default function SplashScreen({ onFinish }) {
     setIsLoading(false);
 
     if (!result.success) {
+      if (result?.errorCode === 'email-already-registered') {
+        Alert.alert(
+          'Account Already Exists',
+          'An account with this email already exists. Would you like to reset your password?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Forgot Password',
+              onPress: () => {
+                handleToggleAuth(true);
+                handleForgotPasswordPress(email.trim());
+              },
+            },
+            {
+              text: 'Sign In',
+              onPress: () => {
+                handleToggleAuth(true);
+                setUsername(email.trim());
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      if (result?.errorCode === 'phone-already-registered') {
+        Alert.alert(
+          'Phone Number Already Used',
+          'An account with this phone number already exists. Would you like to reset your password?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Forgot Password',
+              onPress: () => {
+                handleToggleAuth(true);
+                handleForgotPasswordPress(phone.trim());
+              },
+            },
+            {
+              text: 'Sign In',
+              onPress: () => {
+                handleToggleAuth(true);
+              },
+            },
+          ]
+        );
+        return;
+      }
+
       Alert.alert('Signup Failed', result.error);
     } else {
-      // Account is created AND the user remains signed in.
-      Alert.alert('Account Created', 'Your account has been created successfully. You are now signed in.', [
-        {
-          text: 'Continue',
-          onPress: () => {
-            // Reset signup form (optional) and continue into the app.
-            setSignupUsername('');
-            setEmail('');
-            setPassword('');
-            setConfirmPassword('');
-            setPhone('');
-            setAddress('');
+      // Account is created, but email verification is required before sign-in.
+      const createdUsername = signupUsername.trim();
+      const createdEmail = (result?.verificationEmail || email).toString().trim().toLowerCase();
 
-            if (typeof onFinish === 'function') {
-              onFinish();
-            }
-          },
-        },
-      ]);
+      // Reset signup form and switch back to login mode.
+      setSignupUsername('');
+      setEmail('');
+      setPassword('');
+      setConfirmPassword('');
+      setPhone('');
+      setAddress('');
+      setIsLogin(true);
+      // Prefill the login field with the username they just registered.
+      setUsername(createdUsername);
+
+      // Open the in-app verification modal directly (no extra "OK" button).
+      openVerifyEmailModal({ knownEmail: createdEmail || undefined });
     }
   };
 
@@ -280,11 +416,12 @@ export default function SplashScreen({ onFinish }) {
     setLegalVisible(true);
   };
 
-  const resolveAccountEmail = async () => {
-    const loginInput = username.trim();
+  const resolveAccountEmail = async (identifierOverride) => {
+    const overrideValue = typeof identifierOverride === 'string' ? identifierOverride : null;
+    const loginInput = (overrideValue ?? username).trim();
 
     if (!loginInput) {
-      Alert.alert('Account Required', 'Enter your username or email in the login field first.');
+      Alert.alert('Account Required', 'Enter your username, email, or phone number in the login field first.');
       return null;
     }
 
@@ -293,6 +430,22 @@ export default function SplashScreen({ onFinish }) {
         // Avoid blocking password resets on Firestore lookups (and avoid account enumeration).
         // If the user entered an email, proceed with the normalized email.
         return loginInput.trim().toLowerCase();
+      }
+
+      const digitsCount = (loginInput.match(/\d/g) || []).length;
+      const looksLikePhone = /^[0-9+()\s-]{7,}$/.test(loginInput) && digitsCount >= 7;
+      if (looksLikePhone) {
+        const phoneLookup = await FirebaseService.getUserByPhone(loginInput);
+        const resolvedEmail = (phoneLookup?.user?.email || phoneLookup?.user?.contactEmail || '').toString().trim();
+
+        if (phoneLookup?.success && resolvedEmail) {
+          // Helpful: populate the login field with the resolved email for the next sign-in.
+          setUsername(resolvedEmail);
+          return resolvedEmail.toLowerCase();
+        }
+
+        Alert.alert('Account Not Found', 'We could not find an email associated with that phone number.');
+        return null;
       }
 
       // Do not pre-normalize here. FirebaseService.getUserByUsername already handles
@@ -311,14 +464,14 @@ export default function SplashScreen({ onFinish }) {
     }
   };
 
-  const handleForgotPasswordPress = async () => {
+  const handleForgotPasswordPress = async (identifierOverride) => {
     setForgotPasswordMessage('');
     setForgotPasswordStep('email');
     setSentToEmail('');
     setForgotEmail('');
 
     setForgotPasswordLoading(true);
-    const resolvedEmail = await resolveAccountEmail();
+    const resolvedEmail = await resolveAccountEmail(identifierOverride);
     setForgotPasswordLoading(false);
 
     if (!resolvedEmail) {
@@ -365,6 +518,251 @@ export default function SplashScreen({ onFinish }) {
     setForgotPasswordStep('email');
     setForgotPasswordMessage('');
     setSentToEmail('');
+  };
+
+  const handleCloseVerifyEmail = () => {
+    setShowVerifyEmail(false);
+    setVerifyEmailAddress('');
+    setVerificationCodeDigits(Array(VERIFICATION_CODE_LENGTH).fill(''));
+    setVerifyEmailMessage('');
+    setVerifyEmailLoading(false);
+    setVerifyEmailResendSecondsLeft(0);
+
+    if (verifyEmailResendIntervalRef.current) {
+      clearInterval(verifyEmailResendIntervalRef.current);
+      verifyEmailResendIntervalRef.current = null;
+    }
+  };
+
+  const openVerifyEmailModal = async ({ identifierOverride, knownEmail } = {}) => {
+    setVerifyEmailMessage('');
+    setVerificationCodeDigits(Array(VERIFICATION_CODE_LENGTH).fill(''));
+    setVerifyEmailResendSecondsLeft(0);
+
+    if (verifyEmailResendIntervalRef.current) {
+      clearInterval(verifyEmailResendIntervalRef.current);
+      verifyEmailResendIntervalRef.current = null;
+    }
+
+    setVerifyEmailLoading(true);
+    const resolvedEmail = knownEmail
+      ? String(knownEmail).trim().toLowerCase()
+      : await resolveAccountEmail(identifierOverride);
+    setVerifyEmailLoading(false);
+
+    if (!resolvedEmail) {
+      return;
+    }
+
+    setVerifyEmailAddress(resolvedEmail);
+    setShowVerifyEmail(true);
+
+    // Best-effort: (re)send a code when opening.
+    setVerifyEmailLoading(true);
+    const sendResult = await requestEmailVerificationCode(resolvedEmail);
+    setVerifyEmailLoading(false);
+
+    if (sendResult?.success) {
+      if (sendResult?.alreadyVerified) {
+        setVerifyEmailMessage('This email is already verified. You can sign in.');
+        setVerifyEmailResendSecondsLeft(0);
+      } else if (sendResult?.throttled) {
+        const retry = sendResult?.retryAfterSeconds
+          ? ` Please wait ${sendResult.retryAfterSeconds}s and try again.`
+          : '';
+        setVerifyEmailMessage(`A code was recently sent.${retry}`);
+
+        const retryAfterSeconds = Math.max(0, Math.ceil(Number(sendResult?.retryAfterSeconds || 0)));
+        if (retryAfterSeconds > 0) {
+          setVerifyEmailResendSecondsLeft(retryAfterSeconds);
+          verifyEmailResendIntervalRef.current = setInterval(() => {
+            setVerifyEmailResendSecondsLeft((current) => {
+              if (current <= 1) {
+                if (verifyEmailResendIntervalRef.current) {
+                  clearInterval(verifyEmailResendIntervalRef.current);
+                  verifyEmailResendIntervalRef.current = null;
+                }
+                return 0;
+              }
+              return current - 1;
+            });
+          }, 1000);
+        }
+      } else {
+        setVerifyEmailMessage('Verification code sent. Check your inbox.');
+
+        // Match backend default throttle window; if backend throttles longer,
+        // we will still respect the server response (throttled + retryAfterSeconds).
+        setVerifyEmailResendSecondsLeft(DEFAULT_VERIFY_EMAIL_RESEND_SECONDS);
+        verifyEmailResendIntervalRef.current = setInterval(() => {
+          setVerifyEmailResendSecondsLeft((current) => {
+            if (current <= 1) {
+              if (verifyEmailResendIntervalRef.current) {
+                clearInterval(verifyEmailResendIntervalRef.current);
+                verifyEmailResendIntervalRef.current = null;
+              }
+              return 0;
+            }
+            return current - 1;
+          });
+        }, 1000);
+      }
+    } else {
+      setVerifyEmailMessage(sendResult?.error || 'Unable to send verification code. Please try again.');
+    }
+  };
+
+  const handleVerificationDigitChange = (index, text) => {
+    const sanitized = String(text || '').replace(/\D/g, '');
+
+    if (!sanitized) {
+      setVerificationCodeDigits((prev) => {
+        const next = [...prev];
+        next[index] = '';
+        return next;
+      });
+      return;
+    }
+
+    const digits = sanitized.split('');
+    setVerificationCodeDigits((prev) => {
+      const next = [...prev];
+      for (let offset = 0; offset < digits.length; offset += 1) {
+        const targetIndex = index + offset;
+        if (targetIndex >= VERIFICATION_CODE_LENGTH) break;
+        next[targetIndex] = digits[offset];
+      }
+      return next;
+    });
+
+    const nextIndex = index + digits.length;
+    if (nextIndex < VERIFICATION_CODE_LENGTH) {
+      verificationCodeInputRefs.current[nextIndex]?.focus?.();
+    } else {
+      verificationCodeInputRefs.current[VERIFICATION_CODE_LENGTH - 1]?.blur?.();
+    }
+  };
+
+  const handleVerificationDigitKeyPress = (index, event) => {
+    if (event?.nativeEvent?.key !== 'Backspace') {
+      return;
+    }
+
+    // If current digit is empty, move back and clear the previous digit.
+    if (!verificationCodeDigits[index] && index > 0) {
+      verificationCodeInputRefs.current[index - 1]?.focus?.();
+      setVerificationCodeDigits((prev) => {
+        const next = [...prev];
+        next[index - 1] = '';
+        return next;
+      });
+    }
+  };
+
+  const handleResendVerificationCode = async () => {
+    if (!verifyEmailAddress) {
+      Alert.alert('Error', 'Missing email address');
+      return;
+    }
+
+    if (verifyEmailResendSecondsLeft > 0) {
+      return;
+    }
+
+    setVerifyEmailLoading(true);
+    setVerifyEmailMessage('');
+    const sendResult = await requestEmailVerificationCode(verifyEmailAddress);
+    setVerifyEmailLoading(false);
+
+    if (sendResult?.success) {
+      if (sendResult?.throttled) {
+        const retry = sendResult?.retryAfterSeconds
+          ? ` Please wait ${sendResult.retryAfterSeconds}s and try again.`
+          : '';
+        setVerifyEmailMessage(`A code was recently sent.${retry}`);
+
+        const retryAfterSeconds = Math.max(0, Math.ceil(Number(sendResult?.retryAfterSeconds || 0)));
+        if (retryAfterSeconds > 0) {
+          if (verifyEmailResendIntervalRef.current) {
+            clearInterval(verifyEmailResendIntervalRef.current);
+            verifyEmailResendIntervalRef.current = null;
+          }
+
+          setVerifyEmailResendSecondsLeft(retryAfterSeconds);
+          verifyEmailResendIntervalRef.current = setInterval(() => {
+            setVerifyEmailResendSecondsLeft((current) => {
+              if (current <= 1) {
+                if (verifyEmailResendIntervalRef.current) {
+                  clearInterval(verifyEmailResendIntervalRef.current);
+                  verifyEmailResendIntervalRef.current = null;
+                }
+                return 0;
+              }
+              return current - 1;
+            });
+          }, 1000);
+        }
+      } else {
+        setVerifyEmailMessage('Verification code sent. Check your inbox.');
+
+        if (verifyEmailResendIntervalRef.current) {
+          clearInterval(verifyEmailResendIntervalRef.current);
+          verifyEmailResendIntervalRef.current = null;
+        }
+
+        setVerifyEmailResendSecondsLeft(DEFAULT_VERIFY_EMAIL_RESEND_SECONDS);
+        verifyEmailResendIntervalRef.current = setInterval(() => {
+          setVerifyEmailResendSecondsLeft((current) => {
+            if (current <= 1) {
+              if (verifyEmailResendIntervalRef.current) {
+                clearInterval(verifyEmailResendIntervalRef.current);
+                verifyEmailResendIntervalRef.current = null;
+              }
+              return 0;
+            }
+            return current - 1;
+          });
+        }, 1000);
+      }
+    } else {
+      const errorMessage = sendResult?.error || 'Unable to send verification code. Please try again.';
+      setVerifyEmailMessage(errorMessage);
+      Alert.alert('Error', errorMessage);
+    }
+  };
+
+  const handleVerifyEmailCode = async () => {
+    if (!verifyEmailAddress) {
+      Alert.alert('Error', 'Missing email address');
+      return;
+    }
+
+    const code = verificationCodeDigits.join('');
+    if (code.length !== VERIFICATION_CODE_LENGTH) {
+      Alert.alert('Error', 'Please enter the 6-digit code');
+      return;
+    }
+
+    setVerifyEmailLoading(true);
+    setVerifyEmailMessage('');
+    const verifyResult = await verifyEmailVerificationCode(verifyEmailAddress, code);
+    setVerifyEmailLoading(false);
+
+    if (verifyResult?.success) {
+      handleCloseVerifyEmail();
+      Alert.alert('Email Verified', 'Your email has been verified. You can now sign in.');
+      return;
+    }
+
+    const errorMessage = verifyResult?.error || 'Invalid code. Please try again.';
+    setVerifyEmailMessage(errorMessage);
+  };
+
+  const formatVerifyEmailResendCountdown = (totalSeconds) => {
+    const clamped = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const minutes = Math.floor(clamped / 60);
+    const seconds = clamped % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
   };
 
   return (
@@ -755,7 +1153,7 @@ export default function SplashScreen({ onFinish }) {
                       <Text style={styles.lockedEmailText}>{forgotEmail}</Text>
                     </View>
                     <Text style={styles.lockedEmailHint}>
-                      Need to use a different account? Close this window and update the login email field first.
+                      Need to use a different account? Close this window and update the login field (email/username/phone) first.
                     </Text>
 
                     {forgotPasswordMessage ? (
@@ -830,6 +1228,153 @@ export default function SplashScreen({ onFinish }) {
                   </View>
                 </>
               ) : null}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Verify Email Modal */}
+      <Modal
+        visible={showVerifyEmail}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleCloseVerifyEmail}
+      >
+        <View style={styles.forgotPasswordOverlay}>
+          <View style={styles.forgotPasswordContainer}>
+            {/* Header */}
+            <View style={styles.forgotPasswordHeader}>
+              <Text style={styles.forgotPasswordTitle}>Verify Email</Text>
+              <TouchableWeb
+                onPress={handleCloseVerifyEmail}
+                style={styles.forgotPasswordCloseButton}
+              >
+                <MaterialCommunityIcons
+                  name="close"
+                  size={24}
+                  color={COLORS.text}
+                />
+              </TouchableWeb>
+            </View>
+
+            <ScrollView style={styles.forgotPasswordContent} showsVerticalScrollIndicator={false}>
+              <Text style={styles.forgotPasswordDescription}>
+                Enter the 6-digit code we emailed you. If you don't see it, check your spam/junk folder.
+              </Text>
+
+              <View style={styles.forgotPasswordForm}>
+                <Text style={styles.inputLabel}>Email</Text>
+                <View style={styles.forgotPasswordLockedInput}>
+                  <MaterialCommunityIcons
+                    name="email-check"
+                    size={20}
+                    color={COLORS.textMuted}
+                    style={{ marginRight: 8 }}
+                  />
+                  <Text style={styles.lockedEmailText}>{verifyEmailAddress}</Text>
+                </View>
+
+                <Text style={styles.inputLabel}>Verification Code</Text>
+                <View style={styles.verificationCodeRow}>
+                  {Array.from({ length: VERIFICATION_CODE_LENGTH }).map((_, index) => (
+                    <TextInput
+                      key={`verification-digit-${index}`}
+                      ref={(ref) => {
+                        verificationCodeInputRefs.current[index] = ref;
+                      }}
+                      style={[
+                        styles.verificationCodeDigitInput,
+                        index !== VERIFICATION_CODE_LENGTH - 1 && styles.verificationCodeDigitInputSpacer,
+                      ]}
+                      value={verificationCodeDigits[index] || ''}
+                      onChangeText={(text) => handleVerificationDigitChange(index, text)}
+                      onKeyPress={(event) => handleVerificationDigitKeyPress(index, event)}
+                      keyboardType={Platform.OS === 'ios' ? 'number-pad' : 'numeric'}
+                      maxLength={1}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType={index === VERIFICATION_CODE_LENGTH - 1 ? 'done' : 'next'}
+                      blurOnSubmit={false}
+                    />
+                  ))}
+                </View>
+
+                {verifyEmailMessage ? (
+                  <Text
+                    style={[
+                      styles.forgotPasswordMessage,
+                      {
+                        color: /unable|invalid|expired|error|missing|not found/i.test(
+                          (verifyEmailMessage || '').toString()
+                        )
+                          ? COLORS.error
+                          : COLORS.success,
+                      },
+                    ]}
+                  >
+                    {verifyEmailMessage}
+                  </Text>
+                ) : null}
+
+                <View style={styles.verifyCodeButtonRow}>
+                  <TouchableWeb
+                    style={[
+                      styles.submitButton,
+                      styles.forgotPasswordButton,
+                      styles.verifyCodeInlineButton,
+                      styles.verifyCodeInlineButtonLeft,
+                      verifyEmailLoading && styles.disabledButton,
+                    ]}
+                    onPress={handleVerifyEmailCode}
+                    disabled={verifyEmailLoading}
+                  >
+                    <LinearGradient
+                      colors={verifyEmailLoading ? ['#CCCCCC', '#CCCCCC'] : GRADIENTS.header}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.submitButtonGradient}
+                    >
+                      {verifyEmailLoading ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={styles.submitButtonText}>Verify</Text>
+                      )}
+                    </LinearGradient>
+                  </TouchableWeb>
+
+                  <TouchableWeb
+                    style={[
+                      styles.submitButton,
+                      styles.forgotPasswordButton,
+                      styles.verifyCodeInlineButton,
+                      (verifyEmailLoading || verifyEmailResendSecondsLeft > 0) && styles.disabledButton,
+                    ]}
+                    onPress={handleResendVerificationCode}
+                    disabled={verifyEmailLoading || verifyEmailResendSecondsLeft > 0}
+                  >
+                    <LinearGradient
+                      colors={
+                        verifyEmailLoading || verifyEmailResendSecondsLeft > 0
+                          ? ['#CCCCCC', '#CCCCCC']
+                          : GRADIENTS.header
+                      }
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.submitButtonGradient}
+                    >
+                      {verifyEmailLoading ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={styles.submitButtonText}>
+                          {verifyEmailResendSecondsLeft > 0
+                            ? `Resend in ${formatVerifyEmailResendCountdown(verifyEmailResendSecondsLeft)}`
+                            : 'Resend Code'}
+                        </Text>
+                      )}
+                    </LinearGradient>
+                  </TouchableWeb>
+                </View>
+              </View>
             </ScrollView>
           </View>
         </View>
@@ -1155,6 +1700,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     minHeight: 48,
   },
+  verificationCodeRow: {
+    flexDirection: 'row',
+  },
+  verificationCodeDigitInput: {
+    flex: 1,
+    minWidth: 32,
+    maxWidth: 52,
+    height: 52,
+    borderRadius: 10,
+    backgroundColor: COLORS.inputBackground || COLORS.lightGray,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    color: COLORS.text,
+    fontSize: 18,
+    fontWeight: '600',
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+  },
+  verificationCodeDigitInputSpacer: {
+    marginRight: SPACING.sm,
+  },
   forgotPasswordLockedInput: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1196,6 +1764,17 @@ const styles = StyleSheet.create({
     color: '#4A90E2',
     fontSize: 14,
     fontWeight: '500',
+  },
+  verifyCodeButtonRow: {
+    flexDirection: 'row',
+    marginTop: SPACING.sm,
+  },
+  verifyCodeInlineButton: {
+    flex: 1,
+    width: 'auto',
+  },
+  verifyCodeInlineButtonLeft: {
+    marginRight: SPACING.md,
   },
   passwordInputContainer: {
     flexDirection: 'row',

@@ -162,7 +162,7 @@ export const useServices = () => {
 };
 
 export const ServicesProvider = ({ children }) => {
-  const { user, loading: authLoading } = useAuth();
+  const { user, isLoading: authLoading } = useAuth();
   const [services, setServices] = useState(SERVICES);
   const [loading, setLoading] = useState(true);
 

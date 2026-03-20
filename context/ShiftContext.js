@@ -8,6 +8,10 @@ import FirebaseEmailQueueService from '../services/FirebaseEmailQueueService';
 
 const ShiftContext = createContext();
 
+// React Native doesn't guarantee a global `window`. Use module state instead.
+let _shiftContextInitialized = false;
+let _lastSaveCount = 0;
+
 export function ShiftProvider({ children }) {
   const { user } = useAuth(); // Add auth context to track user changes
   const { sendNotificationToUser } = useNotifications();
@@ -201,9 +205,9 @@ export function ShiftProvider({ children }) {
 
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(requests));
       // Only log saves when there's a meaningful change
-      if (!window.lastSaveCount || window.lastSaveCount !== requests.length) {
+      if (_lastSaveCount !== requests.length) {
         // Shift requests saved to AsyncStorage
-        window.lastSaveCount = requests.length;
+        _lastSaveCount = requests.length;
       }
     } catch (error) {
       console.error('Failed to save shift requests:', error);
@@ -330,9 +334,8 @@ export function ShiftProvider({ children }) {
   useEffect(() => {
     if (user) {
       // Only log initial load, not every effect run
-      if (!window.shiftContextInitialized) {
-
-        window.shiftContextInitialized = true;
+      if (!_shiftContextInitialized) {
+        _shiftContextInitialized = true;
       }
       
       loadShiftRequests();
@@ -367,7 +370,7 @@ export function ShiftProvider({ children }) {
       };
     } else {
       // Reset initialization flag when user logs out
-      window.shiftContextInitialized = false;
+      _shiftContextInitialized = false;
     }
     // Don't clear data when user is temporarily unavailable - keep cached data
   }, [user?.id, user?.role, isOnline]); // Depend on user ID, role, and online status

@@ -20,9 +20,21 @@ class FygaroPaymentService {
   }
 
   static getBackendPaymentUrl(path = '') {
-    const base = getBackendBaseUrl().replace(/\/$/, '');
+    // If an explicit API base URL is configured (local dev or custom host), use it.
+    // Otherwise route payment calls directly to the deployed Cloud Function.
+    const envUrl = (typeof process !== 'undefined' && process.env)
+      ? (process.env.EXPO_PUBLIC_API_BASE_URL || process.env.API_BASE_URL)
+      : undefined;
+    const base = envUrl
+      ? envUrl.replace(/\/$/, '')
+      : 'https://us-central1-nurses-afb7e.cloudfunctions.net/payments';
     const normalizedPath = path ? `/${path.replace(/^\//, '')}` : '';
-    return `${base}/api/payments${normalizedPath}`;
+    // When using the Cloud Function URL the path segment is appended directly;
+    // when using a local backend the /api/payments prefix is needed.
+    if (envUrl) {
+      return `${base}/api/payments${normalizedPath}`;
+    }
+    return `${base}${normalizedPath}`;
   }
 
   /**

@@ -245,7 +245,7 @@ export const AppointmentProvider = ({ children }) => {
             clientName: apt.clientName || patientFullName,
             clientEmail: apt.clientEmail || apt.patient?.email || '',
             clientPhone: apt.clientPhone || apt.patient?.phone || '',
-            service: apt.serviceType || apt.appointmentType || apt.service || 'General Care',
+            service: apt.service || apt.appointmentType || apt.serviceName || (Array.isArray(apt.services) && apt.services[0]) || apt.serviceType || 'General Care',
             appointmentType: apt.appointmentType || null,
             serviceType: apt.serviceType || null,
             date: apt.scheduledDate || apt.date,
@@ -291,12 +291,12 @@ export const AppointmentProvider = ({ children }) => {
             totalInstances: apt.totalInstances || null,
             daysOfWeek: apt.daysOfWeek || apt.recurringDaysOfWeek || apt.recurringDaysOfWeekList || cachedMatch?.daysOfWeek || null,
             selectedDays: apt.selectedDays || apt.daysOfWeek || apt.recurringDaysOfWeek || apt.recurringDaysOfWeekList || cachedMatch?.selectedDays || null,
-            preferredNurseId: apt.preferredNurseId || apt.requestedNurseId || cachedMatch?.preferredNurseId || null,
-            preferredNurseName: apt.preferredNurseName || apt.requestedNurseName || cachedMatch?.preferredNurseName || null,
-            preferredNurseCode: apt.preferredNurseCode || apt.requestedNurseCode || cachedMatch?.preferredNurseCode || null,
-            requestedNurseId: apt.requestedNurseId || cachedMatch?.requestedNurseId || null,
-            requestedNurseName: apt.requestedNurseName || cachedMatch?.requestedNurseName || null,
-            requestedNurseCode: apt.requestedNurseCode || cachedMatch?.requestedNurseCode || null,
+            preferredNurseId: apt.preferredNurseId || apt.requestedNurseId || apt.primaryNurseId || apt.selectedNurseId || apt.primaryNurse?.id || cachedMatch?.preferredNurseId || null,
+            preferredNurseName: apt.preferredNurseName || apt.requestedNurseName || apt.primaryNurseName || apt.selectedNurseName || apt.primaryNurse?.name || cachedMatch?.preferredNurseName || null,
+            preferredNurseCode: apt.preferredNurseCode || apt.requestedNurseCode || apt.primaryNurseCode || apt.selectedNurseCode || apt.primaryNurse?.nurseCode || cachedMatch?.preferredNurseCode || null,
+            requestedNurseId: apt.requestedNurseId || apt.preferredNurseId || apt.primaryNurseId || apt.selectedNurseId || cachedMatch?.requestedNurseId || null,
+            requestedNurseName: apt.requestedNurseName || apt.preferredNurseName || apt.primaryNurseName || apt.selectedNurseName || cachedMatch?.requestedNurseName || null,
+            requestedNurseCode: apt.requestedNurseCode || apt.preferredNurseCode || apt.primaryNurseCode || apt.selectedNurseCode || cachedMatch?.requestedNurseCode || null,
 
             // Preserve backup nurse fields (used by admin/nurse details modals)
             backupNurses:

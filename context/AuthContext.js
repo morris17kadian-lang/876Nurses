@@ -1,4 +1,4 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useState, useContext, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { 
   createUserWithEmailAndPassword,
@@ -51,6 +51,75 @@ const registerPushToken = async (userId) => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Prevent onAuthStateChanged from signing out mid-signup.
+  const signupInProgressRef = useRef(false);
+
+  // Option (c): allow staff accounts (admins/nurses) to bypass email verification.
+  // This is less strict than patient verification and should be used intentionally.
+  const looksLikeStaffCode = (value) => {
+    const normalized = String(value || '').trim().toUpperCase();
+    return /^(ADMIN|NURSE)\d+$/.test(normalized);
+  };
+
+  const isStaffProfile = (profile, collection) => {
+    if (collection === 'admins' || collection === 'nurses') return true;
+
+    const role = String(profile?.role || '').trim().toLowerCase();
+    if (['admin', 'superadmin', 'nurse', 'admins', 'nurses'].includes(role)) return true;
+
+    const codeCandidate = String(
+      profile?.code || profile?.adminCode || profile?.nurseCode || profile?.username || ''
+    ).trim();
+    return looksLikeStaffCode(codeCandidate);
+  };
+
+  // Option 2 verification: email a 6-digit code and verify it in-app.
+  // This avoids Firebase-hosted verification links entirely.
+  const requestEmailVerificationCode = async (email) => {
+    try {
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+      if (!normalizedEmail) {
+        return { success: false, error: 'Missing email address' };
+      }
+
+      const functions = getFunctions(app, 'us-central1');
+      const requestFn = httpsCallable(functions, 'requestEmailVerificationCode');
+      const result = await requestFn({ email: normalizedEmail });
+      return { success: true, ...(result?.data || {}) };
+    } catch (error) {
+      console.error('Request email verification code error:', error);
+      return {
+        success: false,
+        error: 'Unable to send verification code right now. Please try again.',
+      };
+    }
+  };
+
+  const verifyEmailVerificationCode = async (email, code) => {
+    try {
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+      const normalizedCode = String(code || '').trim();
+
+      if (!normalizedEmail) {
+        return { success: false, error: 'Missing email address' };
+      }
+
+      if (!normalizedCode) {
+        return { success: false, error: 'Missing verification code' };
+      }
+
+      const functions = getFunctions(app, 'us-central1');
+      const verifyFn = httpsCallable(functions, 'verifyEmailVerificationCode');
+      const result = await verifyFn({ email: normalizedEmail, code: normalizedCode });
+      return { success: true, ...(result?.data || {}) };
+    } catch (error) {
+      console.error('Verify email code error:', error);
+      const message =
+        error?.message ||
+        'Unable to verify your code right now. Please request a new code and try again.';
+      return { success: false, error: message };
+    }
+  };
 
   const changePassword = async (currentPassword, newPassword) => {
     try {
@@ -94,13 +163,36 @@ export const AuthProvider = ({ children }) => {
         }
 
         if (firebaseUser) {
+          const needsEmailVerification = !!(firebaseUser?.email && !firebaseUser.emailVerified);
+
           // User is logged in
           const userResult = await FirebaseService.getUser(firebaseUser.uid);
+
+          // HARD email verification enforcement (with staff bypass).
+          // Do not allow unverified non-staff accounts to be treated as authenticated in-app.
+          if (needsEmailVerification) {
+            const staffByProfile = userResult?.success && isStaffProfile(userResult.user, userResult.collection);
+            if (!staffByProfile) {
+              // Avoid interrupting the signup flow (profile creation + verification email).
+              if (!signupInProgressRef.current) {
+                try {
+                  await signOut(auth);
+                } catch (e) {
+                  // Ignore sign out failures.
+                }
+              }
+
+              setUser(null);
+              await AsyncStorage.removeItem('user');
+              await AsyncStorage.removeItem('authToken');
+              return;
+            }
+          }
           
           // If offline, continue with cached user data
           if (userResult.offline) {
             console.log('📡 Offline - using cached user data');
-            setLoading(false);
+            setIsLoading(false);
             return;
           }
           
@@ -159,6 +251,7 @@ export const AuthProvider = ({ children }) => {
       // Check if input is email or username
       let emailToUse = usernameOrEmail;
       let lookedUpProfile = null;
+      let existingProfileResult = null;
       
       // If input doesn't contain @, treat it as username and look it up
       if (!usernameOrEmail.includes('@')) {
@@ -186,6 +279,55 @@ export const AuthProvider = ({ children }) => {
       }
       const userCredential = await signInWithEmailAndPassword(auth, emailToUse, password);
       const firebaseUser = userCredential.user;
+
+      // Ensure we have the latest emailVerified value.
+      try {
+        await firebaseUser.reload();
+      } catch (e) {
+        // Non-fatal if reload fails.
+      }
+
+      // HARD email verification enforcement (with staff bypass).
+      if (firebaseUser?.email && !firebaseUser.emailVerified) {
+        const loginLooksLikeStaff = looksLikeStaffCode(usernameOrEmail);
+        const lookupLooksLikeStaff = lookedUpProfile ? isStaffProfile(lookedUpProfile) : false;
+
+        let bypassVerification = loginLooksLikeStaff || lookupLooksLikeStaff;
+
+        // If they signed in via email, best-effort check their profile collection.
+        if (!bypassVerification) {
+          try {
+            existingProfileResult = await FirebaseService.getUser(firebaseUser.uid);
+            if (existingProfileResult?.success && isStaffProfile(existingProfileResult.user, existingProfileResult.collection)) {
+              bypassVerification = true;
+            }
+          } catch (e) {
+            // Ignore lookup failures; fall back to enforcing verification.
+          }
+        }
+
+        if (!bypassVerification) {
+          // Best-effort: send a new verification code to help the user recover.
+          try {
+            await requestEmailVerificationCode(emailToUse);
+          } catch (e) {
+            // Ignore resend failures (rate limiting, network, etc.).
+          }
+
+          try {
+            await signOut(auth);
+          } catch (e) {
+            // Ignore sign out failures.
+          }
+
+          return {
+            success: false,
+            needsEmailVerification: true,
+            verificationEmail: emailToUse,
+            error: 'Please verify your email before signing in. We sent a 6-digit verification code to your email address.',
+          };
+        }
+      }
       if (__DEV__ && DEBUG_AUTH) {
         console.log('Firebase Auth success, UID:', firebaseUser.uid);
       }
@@ -195,6 +337,8 @@ export const AuthProvider = ({ children }) => {
       let resolvedProfile = null;
       if (lookedUpProfile?.id && lookedUpProfile.id === firebaseUser.uid) {
         resolvedProfile = lookedUpProfile;
+      } else if (existingProfileResult?.success) {
+        resolvedProfile = existingProfileResult.user;
       } else {
         const userResult = await FirebaseService.getUser(firebaseUser.uid);
         if (userResult.offline) {
@@ -219,6 +363,29 @@ export const AuthProvider = ({ children }) => {
 
         await FirebaseService.createUser(firebaseUser.uid, newUserData);
         resolvedProfile = newUserData;
+      }
+
+      // Queue the welcome email ONLY after the user has verified their email AND successfully signed in.
+      // To avoid sending to legacy accounts, we only queue when the profile explicitly opts-in
+      // via `welcomeEmailQueued === false` (new signups).
+      try {
+        const shouldQueueWelcomeEmail = resolvedProfile?.welcomeEmailQueued === false;
+        if (shouldQueueWelcomeEmail) {
+          await queueWelcomeEmail(firebaseUser);
+          const queuedAt = new Date().toISOString();
+          await FirebaseService.updateUser(firebaseUser.uid, {
+            welcomeEmailQueued: true,
+            welcomeEmailQueuedAt: queuedAt,
+          });
+          resolvedProfile = {
+            ...(resolvedProfile || {}),
+            welcomeEmailQueued: true,
+            welcomeEmailQueuedAt: queuedAt,
+          };
+        }
+      } catch (emailError) {
+        // Non-fatal if welcome email queuing fails.
+        console.warn('Failed to queue welcome email after login:', emailError);
       }
 
       // Normalize the built-in super admin display details (ADMIN001).
@@ -327,6 +494,22 @@ export const AuthProvider = ({ children }) => {
         }
       }
 
+      // Best-effort: backfill phoneNormalized for legacy profiles (improves phone lookup + duplicate detection).
+      try {
+        const profilePhone = (resolvedProfile?.phone || '').toString().trim();
+        const profilePhoneNormalized = (resolvedProfile?.phoneNormalized || '').toString().trim();
+        if (profilePhone && !profilePhoneNormalized) {
+          const computed = FirebaseService.normalizePhoneNumber(profilePhone);
+          if (computed) {
+            // Fire-and-forget: don't slow down login.
+            FirebaseService.updateUser(firebaseUser.uid, { phoneNormalized: computed }).catch(() => {});
+            resolvedProfile = { ...resolvedProfile, phoneNormalized: computed };
+          }
+        }
+      } catch (e) {
+        // Ignore normalization issues.
+      }
+
       setUser({
         id: firebaseUser.uid,
         email: firebaseUser.email,
@@ -363,19 +546,29 @@ export const AuthProvider = ({ children }) => {
   };
 
   const signup = async (username, email, password, phone, address, country) => {
+    signupInProgressRef.current = true;
     try {
       setIsLoading(true);
 
       // Check if email already exists
       const existingUser = await FirebaseService.getUserByEmail(email);
       if (existingUser.success) {
-        return { success: false, error: 'Email already registered' };
+        return { success: false, error: 'Email already registered', errorCode: 'email-already-registered' };
       }
 
       // Check if username already exists
       const existingUsername = await FirebaseService.getUserByUsername(username);
       if (existingUsername.success) {
-        return { success: false, error: 'Username already taken' };
+        return { success: false, error: 'Username already taken', errorCode: 'username-already-taken' };
+      }
+
+      // Check if phone already exists (only if provided)
+      const normalizedPhoneInput = (phone || '').toString().trim();
+      if (normalizedPhoneInput) {
+        const existingPhone = await FirebaseService.getUserByPhone(normalizedPhoneInput);
+        if (existingPhone.success) {
+          return { success: false, error: 'Phone number already registered', errorCode: 'phone-already-registered' };
+        }
       }
 
       // Create user in Firebase Auth
@@ -406,6 +599,8 @@ export const AuthProvider = ({ children }) => {
         country,
         role: userRole,
         displayName: username,
+        // Welcome email should be sent only after verified sign-in.
+        welcomeEmailQueued: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
@@ -413,34 +608,21 @@ export const AuthProvider = ({ children }) => {
       const createResult = await FirebaseService.createUser(firebaseUser.uid, userData);
 
       if (createResult.success) {
-        // Keep the newly created user signed in.
-        // This prevents a confusing flash to the app (logged-in) followed by a forced logout
-        // back to the SplashScreen.
-        setUser({
-          id: firebaseUser.uid,
-          email: firebaseUser.email,
-          ...userData,
-        });
-
+        // Send verification code email (HARD verification required before login).
         try {
-          await AsyncStorage.setItem('user', JSON.stringify({ id: firebaseUser.uid, email: firebaseUser.email, ...userData }));
-          await AsyncStorage.setItem('authToken', firebaseUser.accessToken);
+          await requestEmailVerificationCode(email);
+        } catch (verificationError) {
+          console.warn('Failed to send verification code email:', verificationError);
+        }
+
+        // Ensure the newly created user cannot remain signed in until verified.
+        try {
+          await signOut(auth);
         } catch (e) {
-          // Non-fatal if local persistence fails.
+          // Ignore sign out failures.
         }
 
-        // Best-effort: register push token (do not block signup).
-        await registerPushToken(firebaseUser.uid);
-
-        // Queue welcome email with HTML styling via Firestore mail queue.
-        try {
-          await queueWelcomeEmail(firebaseUser);
-        } catch (emailError) {
-          // Non-fatal if email queuing fails.
-          console.warn('Failed to queue welcome email:', emailError);
-        }
-
-        return { success: true };
+        return { success: true, needsEmailVerification: true, verificationEmail: email };
       } else {
         // Delete the Firebase Auth user if Firestore creation failed
         await firebaseUser.delete();
@@ -460,6 +642,7 @@ export const AuthProvider = ({ children }) => {
 
       return { success: false, error: errorMessage };
     } finally {
+      signupInProgressRef.current = false;
       setIsLoading(false);
     }
   };
@@ -554,6 +737,8 @@ export const AuthProvider = ({ children }) => {
     changePassword,
     updateUser,
     updateUserProfile,
+    requestEmailVerificationCode,
+    verifyEmailVerificationCode,
     isAuthenticated: !!user,
   };
 

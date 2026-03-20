@@ -84,7 +84,7 @@ export default function SignupScreen({ navigation }) {
     } else {
       Alert.alert(
         'Account Created Successfully!',
-        'Your account has been created. Please sign in with your new credentials.',
+        'Your account has been created. We sent a 6-digit verification code to your email. Verify your email, then sign in.',
         [
           {
             text: 'OK',

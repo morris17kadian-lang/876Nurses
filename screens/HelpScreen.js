@@ -9,44 +9,65 @@ import {
   Linking,
   TextInput,
   Image,
+  ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, GRADIENTS, SPACING, CONTACT_INFO } from '../constants';
+import EmailService from '../services/EmailService';
 
 export default function HelpScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const [expandedFaq, setExpandedFaq] = useState(null);
   const [feedbackText, setFeedbackText] = useState('');
+  const [isSending, setIsSending] = useState(false);
 
-  const handleSendFeedback = () => {
+  const handleSendFeedback = async () => {
     if (!feedbackText.trim()) {
       Alert.alert('Empty Feedback', 'Please enter your feedback before sending.');
       return;
     }
 
-    Alert.alert(
-      'Send Feedback',
-      'How would you like to send your feedback?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Email', 
-          onPress: () => {
-            const body = encodeURIComponent(feedbackText);
-            Linking.openURL(`mailto:${CONTACT_INFO.email}?subject=App Feedback&body=${body}`);
-            setFeedbackText('');
-          }
+    setIsSending(true);
+
+    try {
+      const result = await EmailService.send({
+        to: CONTACT_INFO.email,
+        subject: 'App Feedback',
+        html: `
+          <h2>App Feedback</h2>
+          <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+          <hr />
+          <p>${feedbackText.replace(/\n/g, '<br />')}</p>
+        `,
+        text: feedbackText,
+        meta: {
+          type: 'feedback',
+          timestamp: new Date().toISOString(),
         },
-        { 
-          text: 'Call', 
-          onPress: () => {
-            Linking.openURL(`tel:${CONTACT_INFO.phone}`);
-          }
-        }
-      ]
-    );
+      });
+
+      if (result.success) {
+        Alert.alert(
+          'Feedback Sent',
+          'Thank you for your feedback! We appreciate your input.',
+          [{ text: 'OK' }]
+        );
+        setFeedbackText('');
+      } else {
+        throw new Error(result.error || 'Failed to send feedback');
+      }
+    } catch (error) {
+      console.error('Error sending feedback:', error);
+      Alert.alert(
+        'Error',
+        'Failed to send feedback. Please try again later or contact us directly at ' + CONTACT_INFO.email,
+        [{ text: 'OK' }]
+      );
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const faqs = [
@@ -202,18 +223,28 @@ export default function HelpScreen({ navigation }) {
               textAlignVertical="top"
             />
             <TouchableWeb
-              style={styles.sendButton}
+              style={[styles.sendButton, isSending && styles.sendButtonDisabled]}
               onPress={handleSendFeedback}
               activeOpacity={0.7}
+              disabled={isSending}
             >
               <LinearGradient
-                colors={GRADIENTS.header}
+                colors={isSending ? [COLORS.border, COLORS.border] : GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 0, y: 1 }}
                 style={styles.sendButtonGradient}
               >
-                <MaterialCommunityIcons name="send" size={20} color={COLORS.white} />
-                <Text style={styles.sendButtonText}>Send Feedback</Text>
+                {isSending ? (
+                  <>
+                    <ActivityIndicator size="small" color={COLORS.white} />
+                    <Text style={styles.sendButtonText}>Sending...</Text>
+                  </>
+                ) : (
+                  <>
+                    <MaterialCommunityIcons name="send" size={20} color={COLORS.white} />
+                    <Text style={styles.sendButtonText}>Send Feedback</Text>
+                  </>
+                )}
               </LinearGradient>
             </TouchableWeb>
           </View>
@@ -451,6 +482,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.15,
     shadowRadius: 4,
     elevation: 3,
+  },
+  sendButtonDisabled: {
+    opacity: 0.6,
   },
   sendButtonGradient: {
     flexDirection: 'row',

@@ -71,6 +71,16 @@ class FirebaseService {
     
     return value;
   }
+
+  /**
+   * Normalize phone numbers for consistent lookups.
+   * Current strategy: keep digits only.
+   */
+  static normalizePhoneNumber(phone) {
+    const raw = (phone || '').toString();
+    const digitsOnly = raw.replace(/\D+/g, '');
+    return digitsOnly;
+  }
   
   // ==================== USER OPERATIONS ====================
   
@@ -83,9 +93,14 @@ class FirebaseService {
       
       // Sanitize userData to remove undefined values
       const sanitizedUserData = FirebaseService.sanitizeFirestoreData(userData || {}) || {};
+
+      const normalizedPhone =
+        sanitizedUserData.phoneNormalized ||
+        (sanitizedUserData.phone ? FirebaseService.normalizePhoneNumber(sanitizedUserData.phone) : '');
       
       const userWithTimestamp = {
         ...sanitizedUserData,
+        ...(normalizedPhone ? { phoneNormalized: normalizedPhone } : {}),
         country: sanitizedUserData.country || 'Jamaica', // Default country
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
@@ -264,6 +279,11 @@ class FirebaseService {
     try {
       const collectionName = role === 'admin' ? 'admins' : role === 'nurse' ? 'nurses' : USERS_COLLECTION;
       const staffRef = doc(db, collectionName, userId);
+
+      const normalizedPhone =
+        userData?.phoneNormalized ||
+        (userData?.phone ? FirebaseService.normalizePhoneNumber(userData.phone) : '');
+
       const resolvedBanking = userData?.bankingDetails || (
         userData?.bankName || userData?.accountNumber || userData?.accountHolderName || userData?.bankBranch
           ? {
@@ -277,6 +297,7 @@ class FirebaseService {
       );
       const staffWithTimestamp = {
         ...userData,
+        ...(normalizedPhone ? { phoneNormalized: normalizedPhone } : {}),
         role: role || userData.role || 'nurse',
         username: userData.username || userData.code || userData.nurseCode || userData.adminCode,
         createdAt: Timestamp.now(),
@@ -444,6 +465,63 @@ class FirebaseService {
       return { success: false, error: 'User not found' };
     } catch (error) {
       console.error('Error getting user by email:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get user by phone across collections (users, nurses, admins)
+   */
+  static async getUserByPhone(phone) {
+    try {
+      const raw = (phone || '').toString().trim();
+      if (!raw) {
+        return { success: false, error: 'Phone number is required' };
+      }
+
+      const normalized = FirebaseService.normalizePhoneNumber(raw);
+      const collectionsToCheck = ['admins', 'nurses', USERS_COLLECTION];
+
+      const tryLookup = async (collectionName, field, value) => {
+        const q = query(collection(db, collectionName), where(field, '==', value), limit(1));
+        const snapshot = await getDocs(q);
+        if (!snapshot.empty) {
+          const docSnap = snapshot.docs[0];
+          return { id: docSnap.id, ...docSnap.data(), __collection: collectionName };
+        }
+        return null;
+      };
+
+      // 1) Prefer normalized match when available
+      if (normalized) {
+        for (const col of collectionsToCheck) {
+          const found = await tryLookup(col, 'phoneNormalized', normalized);
+          if (found) {
+            const { __collection, ...user } = found;
+            return { success: true, user, collection: __collection };
+          }
+        }
+      }
+
+      // 2) Fallback: raw/exact match on stored phone field
+      const candidates = [...new Set([raw, normalized].filter(Boolean))];
+      for (const candidate of candidates) {
+        for (const col of collectionsToCheck) {
+          const found = await tryLookup(col, 'phone', candidate);
+          if (found) {
+            const { __collection, ...user } = found;
+            return { success: true, user, collection: __collection };
+          }
+        }
+      }
+
+      return { success: false, error: 'User not found' };
+    } catch (error) {
+      // Silently handle offline errors to prevent app crashes
+      if (error?.code === 'unavailable' || error?.message?.includes('offline')) {
+        return { success: false, error: 'offline', offline: true };
+      }
+      console.error('Error getting user by phone:', error);
       return { success: false, error: error.message };
     }
   }

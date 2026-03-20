@@ -1449,7 +1449,12 @@ class InvoiceService {
       // Handle multiple services
       const services = appointmentData.services || [];
       const items = services.map(service => {
-        const rate = this.getServicePrice(service.name || service);
+        // Use the price passed from the booking screen (from Firestore service config) if available,
+        // otherwise fall back to the hardcoded SERVICE_RATES table.
+        const passedPrice = typeof service.price === 'number'
+          ? service.price
+          : (typeof service.price === 'string' ? parseFloat(String(service.price).replace(/,/g, '')) || 0 : 0);
+        const rate = passedPrice > 0 ? passedPrice : this.getServicePrice(service.name || service);
         const hours = service.hours || appointmentData.hoursWorked || 1;
         return {
           description: service.name || service,
@@ -1484,6 +1489,7 @@ class InvoiceService {
         dueDate: this.formatDateForInvoice(appointmentData.appointmentDate),
         status: 'Partial',
         paymentStatus: 'partial',
+        isConsultation: true, // Allows patient-created deposit invoices per Firestore rule line 109
         createdAt: new Date().toISOString(),
         appointmentId: appointmentData.id,
         relatedAppointmentId: appointmentData.id,
@@ -1538,11 +1544,11 @@ class InvoiceService {
         fileName
       };
 
-      await this.saveInvoiceRecord(invoiceRecord);
+      const savedInvoice = await this.saveInvoiceRecord(invoiceRecord);
 
       return {
         success: true,
-        invoice: invoiceRecord
+        invoice: savedInvoice
       };
     } catch (error) {
       // Error creating partial invoice
@@ -1743,22 +1749,22 @@ class InvoiceService {
    * Save invoice record to AsyncStorage and sync to backend
    */
   static async saveInvoiceRecord(invoice) {
+    // PRIMARY: Save to Firestore first (source of truth)
+    const currentUid = auth?.currentUser?.uid || null;
+
+    const invoiceData = {
+      ...invoice,
+      createdByUid: invoice?.createdByUid || currentUid,
+      createdBySource: invoice?.createdBySource || 'mobile',
+      createdAt: invoice.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
     try {
-      // PRIMARY: Save to Firestore first (source of truth)
-      const currentUid = auth?.currentUser?.uid || null;
-
-      const invoiceData = {
-        ...invoice,
-        createdByUid: invoice?.createdByUid || currentUid,
-        createdBySource: invoice?.createdBySource || 'mobile',
-        createdAt: invoice.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
       // Save to Firestore
       const invoicesRef = collection(db, 'invoices');
       const docRef = await addDoc(invoicesRef, invoiceData);
-      
+
       // Add Firestore document ID to invoice
       const savedInvoice = {
         ...invoiceData,
@@ -1766,28 +1772,28 @@ class InvoiceService {
       };
 
       // SECONDARY: Cache locally in AsyncStorage for offline access
-      try {
-        const existingInvoices = await this._getCachedInvoices();
-        const exists = existingInvoices.some(inv => this.invoiceIdsMatch(inv.invoiceId, invoice.invoiceId));
-        
-        let updatedInvoices;
-        if (!exists) {
-          updatedInvoices = [...existingInvoices, savedInvoice];
-        } else {
-          updatedInvoices = existingInvoices.map(inv => 
-            this.invoiceIdsMatch(inv.invoiceId, invoice.invoiceId) ? savedInvoice : inv
-          );
-        }
-        
-        await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
-      } catch (cacheError) {
-        // Cache update failed but Firestore save succeeded - that's okay
-        console.warn('Failed to update invoice cache:', cacheError);
-      }
+      await this._upsertCachedInvoice(savedInvoice);
 
       return savedInvoice;
     } catch (error) {
       console.error('Error saving invoice to Firestore:', error);
+
+      const errorCode = error?.code || '';
+      const isPermissionOrOffline = errorCode === 'permission-denied' || errorCode === 'unavailable';
+
+      // Graceful fallback: keep booking flow alive when Firestore write is blocked.
+      if (isPermissionOrOffline) {
+        const fallbackInvoice = {
+          ...invoiceData,
+          firestoreId: null,
+          syncStatus: 'local-only',
+          saveErrorCode: errorCode || 'unknown',
+        };
+
+        await this._upsertCachedInvoice(fallbackInvoice);
+        return fallbackInvoice;
+      }
+
       throw error;
     }
   }
@@ -1860,6 +1866,29 @@ class InvoiceService {
         if (typeof onError === 'function') onError(error);
       }
     );
+  }
+
+  /**
+   * Upsert one invoice in local cache for offline-first behavior.
+   */
+  static async _upsertCachedInvoice(invoice) {
+    try {
+      const existingInvoices = await this._getCachedInvoices();
+      const exists = existingInvoices.some((inv) => this.invoiceIdsMatch(inv.invoiceId, invoice.invoiceId));
+
+      let updatedInvoices;
+      if (!exists) {
+        updatedInvoices = [...existingInvoices, invoice];
+      } else {
+        updatedInvoices = existingInvoices.map((inv) =>
+          this.invoiceIdsMatch(inv.invoiceId, invoice.invoiceId) ? invoice : inv
+        );
+      }
+
+      await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
+    } catch (cacheError) {
+      console.warn('Failed to update invoice cache:', cacheError);
+    }
   }
 
   /**
@@ -1968,6 +1997,28 @@ class InvoiceService {
     } catch (error) {
       console.error('Error updating invoice status:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Update the appointmentId/relatedAppointmentId on a deposit invoice after the real
+   * appointment Firestore document ID is known.
+   */
+  static async patchAppointmentId(invoiceId, realAppointmentId) {
+    try {
+      const invoicesRef = collection(db, 'invoices');
+      const q = query(invoicesRef, where('invoiceId', '==', invoiceId), limit(1));
+      const snapshot = await getDocs(q);
+      if (!snapshot.empty) {
+        const docRef = doc(db, 'invoices', snapshot.docs[0].id);
+        await setDoc(docRef, {
+          appointmentId: realAppointmentId,
+          relatedAppointmentId: realAppointmentId,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+    } catch (e) {
+      console.warn('patchAppointmentId failed:', e);
     }
   }
 

@@ -850,10 +850,112 @@ export default function BookScreen({ navigation, route }) {
 
     setProcessingConsultationPayment(true);
     try {
-      const patientId = user?.id || user?.uid || email;
       const isScheduled = Boolean(scheduledFor);
+      const scheduleDesc = isScheduled 
+        ? `scheduled for ${scheduledFor.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${formatConsultationHourLabel(scheduledHour, consultationScheduledMinute)}`
+        : 'immediate call';
 
-      // Save consultation request directly to Firebase (no payment required)
+      // Initialize Fygaro payment for consultation
+      const paymentResult = await FygaroPaymentService.initializePayment({
+        amount: CONSULTATION_FEE_JMD,
+        currency: 'JMD',
+        customerId: user?.id || email,
+        customerName: name,
+        customerEmail: email,
+        customerPhone: formData?.phone || '',
+        description: `Consultation call (${scheduleDesc})`,
+        metadata: {
+          type: 'consultation',
+          isScheduled: isScheduled,
+          scheduledFor: isScheduled ? scheduledFor.toISOString() : null,
+          scheduledHour: scheduledHour ?? null,
+          consultationFee: CONSULTATION_FEE_JMD,
+        }
+      });
+
+      if (paymentResult.success) {
+        // Store consultation details for after payment verification
+        const consultationDetails = {
+          scheduledFor,
+          scheduledHour,
+          scheduledDate,
+          isScheduled,
+          name,
+          email,
+        };
+
+        // For web, open payment in new tab
+        if (Platform.OS === 'web') {
+          window.open(paymentResult.paymentUrl, '_blank');
+          
+          Alert.alert(
+            'Payment Window Opened',
+            'Complete your consultation payment in the new window. Once done, return here and click "Verify Payment" to continue.',
+            [
+              {
+                text: 'Verify Payment',
+                onPress: () => handleVerifyConsultationPayment(paymentResult.transactionId, consultationDetails)
+              },
+              {
+                text: 'Cancel',
+                style: 'cancel',
+                onPress: () => {
+                  setConsultationModalVisible(false);
+                  setProcessingConsultationPayment(false);
+                }
+              }
+            ]
+          );
+        } else {
+          // For mobile, navigate to webview
+          setConsultationModalVisible(false);
+          setProcessingConsultationPayment(false);
+          
+          navigation.navigate('PaymentWebview', {
+            paymentUrl: paymentResult.paymentUrl,
+            sessionId: paymentResult.sessionId,
+            transactionId: paymentResult.transactionId,
+            onSuccess: () => handleVerifyConsultationPayment(paymentResult.transactionId, consultationDetails)
+          });
+        }
+      } else {
+        Alert.alert('Payment Error', paymentResult.error || 'Failed to initialize consultation payment');
+        setProcessingConsultationPayment(false);
+      }
+    } catch (error) {
+      console.error('Consultation payment error:', error);
+      Alert.alert('Error', 'Failed to process consultation payment');
+      setProcessingConsultationPayment(false);
+    }
+  };
+
+  const handleVerifyConsultationPayment = async (transactionId, consultationDetails) => {
+    try {
+      setProcessingConsultationPayment(true);
+
+      // Verify payment with Fygaro
+      const verificationResult = await FygaroPaymentService.verifyPayment(transactionId);
+
+      if (verificationResult.success && verificationResult.status === 'completed') {
+        // Payment verified, create consultation request
+        await createConsultationRequestAfterPayment(transactionId, consultationDetails);
+      } else {
+        Alert.alert('Verification Failed', 'Payment could not be verified. Please contact support.');
+        setProcessingConsultationPayment(false);
+      }
+    } catch (error) {
+      console.error('Payment verification error:', error);
+      Alert.alert('Error', 'Failed to verify consultation payment');
+      setProcessingConsultationPayment(false);
+    }
+  };
+
+  const createConsultationRequestAfterPayment = async (transactionId, consultationDetails) => {
+    try {
+      const { scheduledFor, scheduledHour, scheduledDate, isScheduled, name, email } = consultationDetails;
+      const patientId = user?.id || user?.uid || email;
+
+      // Save consultation request to Firebase with payment info
       await FirebaseService.createConsultationRequest({
         patientId,
         patientAuthUid: user?.uid || null,
@@ -874,6 +976,11 @@ export default function BookScreen({ navigation, route }) {
         preferredNurseId: formData?.preferredNurseId || null,
         preferredNurseName: formData?.preferredNurseName || null,
         preferredNurseCode: formData?.preferredNurseCode || null,
+        // Payment information
+        isPaid: true,
+        paymentMethod: 'fygaro',
+        transactionId: transactionId,
+        paidAt: new Date().toISOString(),
       });
 
       // If scheduled: add a local push notification reminder + save to AsyncStorage for the patient's reminder list
@@ -926,10 +1033,10 @@ export default function BookScreen({ navigation, route }) {
         await ApiService.createNotification({
           userId: 'admin',
           type: 'consultation_request',
-          title: isScheduled ? 'New Scheduled Consultation' : 'New Consultation Call Request',
+          title: isScheduled ? 'New Paid Consultation Scheduled' : 'New Paid Consultation Request',
           body: isScheduled
-            ? `${name} has scheduled a consultation call for ${scheduledFor.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${formatConsultationHourLabel(scheduledHour, consultationScheduledMinute)}.`
-            : `${name} is requesting a consultation call now. Phone: ${formData?.phone || 'N/A'}.`,
+            ? `${name} has paid J$${CONSULTATION_FEE_JMD.toLocaleString()} and scheduled a consultation call for ${scheduledFor.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${formatConsultationHourLabel(scheduledHour, consultationScheduledMinute)}.`
+            : `${name} has paid J$${CONSULTATION_FEE_JMD.toLocaleString()} and is requesting a consultation call now. Phone: ${formData?.phone || 'N/A'}.`,
           patientId,
           patientName: name,
           patientEmail: email,
@@ -943,17 +1050,18 @@ export default function BookScreen({ navigation, route }) {
 
       setConsultationModalVisible(false);
       resetConsultationSchedule();
+      setProcessingConsultationPayment(false);
 
       setTimeout(() => {
         if (isScheduled) {
           Alert.alert(
-            'Consultation Scheduled',
+            'Payment Successful',
             `Your consultation call is scheduled for ${scheduledFor.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${formatConsultationHourLabel(scheduledHour, consultationScheduledMinute)}. We will call you at that time.`
           );
         } else {
           Alert.alert(
-            'Request Received',
-            'Your consultation request has been submitted. A nurse will call you shortly.',
+            'Payment Successful',
+            'Your consultation has been paid and confirmed. A nurse will call you shortly.',
             [
               { text: 'Call Now', onPress: openConsultationDialer },
               { text: 'OK' },
@@ -962,8 +1070,8 @@ export default function BookScreen({ navigation, route }) {
         }
       }, 250);
     } catch (error) {
-      Alert.alert('Consultation Request Failed', error?.message || 'Unable to submit your consultation request. Please try again.');
-    } finally {
+      console.error('Consultation creation error:', error);
+      Alert.alert('Error', error?.message || 'Unable to complete your consultation request. Please contact support with your transaction ID.');
       setProcessingConsultationPayment(false);
     }
   };
@@ -1061,10 +1169,13 @@ export default function BookScreen({ navigation, route }) {
 
   const createAppointmentWithDeposit = async (transactionId) => {
     try {
+      // Generate a temp ID that will be replaced once the real appointment is created
+      const tempAppointmentId = `appointment-${Date.now()}`;
+
       // Create partial invoice first
       const invoiceResult = await InvoiceService.createPartialInvoice(
         {
-          id: `appointment-${Date.now()}`,
+          id: tempAppointmentId,
           patientId: user?.id || formData.email,
           patientName: formData.name,
           patientEmail: formData.email,
@@ -1102,12 +1213,14 @@ export default function BookScreen({ navigation, route }) {
       }
 
       // Create appointment with invoice data
+      const primaryService = formData.services?.[0] || formData.service || 'General Care';
       const appointmentData = {
         name: formData.name,
         email: formData.email,
         phone: formData.phone,
         address: formData.address,
         services: formData.services,
+        service: primaryService,
         preferredDate: formData.startDate,
         preferredTime: formData.startTime,
         date: formData.startDate,
@@ -1119,6 +1232,12 @@ export default function BookScreen({ navigation, route }) {
         notes: formData.notes,
         patientAlerts: formData.patientAlerts || null,
         subscriptionPlan: formData.subscriptionPlan,
+        preferredNurseId: formData.preferredNurseId || null,
+        preferredNurseName: formData.preferredNurseName || null,
+        preferredNurseCode: formData.preferredNurseCode || null,
+        requestedNurseId: formData.preferredNurseId || null,
+        requestedNurseName: formData.preferredNurseName || null,
+        requestedNurseCode: formData.preferredNurseCode || null,
         isRecurring: false,
         patientId: user?.id || formData.email,
         patientName: formData.name,
@@ -1141,7 +1260,12 @@ export default function BookScreen({ navigation, route }) {
         }
       }
 
-      await bookAppointment(appointmentData);
+      const newAppointment = await bookAppointment(appointmentData);
+      // Back-patch the invoice with the real Firestore appointment ID so it can be
+      // found when the patient opens their appointment details.
+      if (newAppointment?.id && newAppointment.id !== tempAppointmentId && invoiceResult.invoice?.invoiceId) {
+        InvoiceService.patchAppointmentId(invoiceResult.invoice.invoiceId, newAppointment.id).catch(console.warn);
+      }
       
       Alert.alert(
         'Success',
@@ -1786,92 +1910,6 @@ export default function BookScreen({ navigation, route }) {
               )}
             </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Vitals</Text>
-              <Text style={styles.subtitle}>If available (leave blank if unknown)</Text>
-
-              <View style={styles.vitalsRow}>
-                <View style={[styles.vitalField, { flex: 1 }]}>
-                  <Text style={styles.vitalLabel}>BP (Sys)</Text>
-                  <View style={styles.inputContainer}>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="120"
-                      placeholderTextColor={COLORS.textMuted}
-                      value={formData?.patientAlerts?.vitals?.bpSystolic || ''}
-                      onChangeText={(t) => setVitalField('bpSystolic', t)}
-                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
-                      returnKeyType="done"
-                    />
-                  </View>
-                </View>
-
-                <View style={[styles.vitalField, { flex: 1 }]}>
-                  <Text style={styles.vitalLabel}>BP (Dia)</Text>
-                  <View style={styles.inputContainer}>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="80"
-                      placeholderTextColor={COLORS.textMuted}
-                      value={formData?.patientAlerts?.vitals?.bpDiastolic || ''}
-                      onChangeText={(t) => setVitalField('bpDiastolic', t)}
-                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
-                      returnKeyType="done"
-                    />
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.vitalsRow}>
-                <View style={[styles.vitalField, { flex: 1 }]}>
-                  <Text style={styles.vitalLabel}>HR</Text>
-                  <View style={styles.inputContainer}>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="72"
-                      placeholderTextColor={COLORS.textMuted}
-                      value={formData?.patientAlerts?.vitals?.heartRate || ''}
-                      onChangeText={(t) => setVitalField('heartRate', t)}
-                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
-                      returnKeyType="done"
-                    />
-                  </View>
-                </View>
-
-                <View style={[styles.vitalField, { flex: 1 }]}>
-                  <Text style={styles.vitalLabel}>Temp</Text>
-                  <View style={styles.inputContainer}>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="98.6"
-                      placeholderTextColor={COLORS.textMuted}
-                      value={formData?.patientAlerts?.vitals?.temperature || ''}
-                      onChangeText={(t) => setVitalField('temperature', t)}
-                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
-                      returnKeyType="done"
-                    />
-                  </View>
-                </View>
-              </View>
-
-              <View style={styles.vitalsRow}>
-                <View style={[styles.vitalField, { flex: 1 }]}>
-                  <Text style={styles.vitalLabel}>SpO₂ %</Text>
-                  <View style={styles.inputContainer}>
-                    <TextInput
-                      style={styles.input}
-                      placeholder="98"
-                      placeholderTextColor={COLORS.textMuted}
-                      value={formData?.patientAlerts?.vitals?.oxygenSaturation || ''}
-                      onChangeText={(t) => setVitalField('oxygenSaturation', t)}
-                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
-                      returnKeyType="done"
-                    />
-                  </View>
-                </View>
-                <View style={[styles.vitalField, { flex: 1 }]} />
-              </View>
-            </View>
           </View>
 
           {/* Allergy Picker Modal (Dropdown) */}
@@ -2011,7 +2049,7 @@ export default function BookScreen({ navigation, route }) {
               <View style={styles.inputContainer}>
                 <TextInput
                   style={[styles.input, styles.notesInput]}
-                  placeholder="Any special requirements or concerns..."
+                  placeholder="Care/health needs..."
                   placeholderTextColor={COLORS.textMuted}
                   value={formData.notes}
                   onChangeText={(text) => setFormData((prev) => ({ ...prev, notes: text }))}

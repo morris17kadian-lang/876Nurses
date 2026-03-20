@@ -1,8 +1,13 @@
+import 'react-native-gesture-handler';
+
 import React, { useEffect, useState } from 'react';
-import { LogBox } from 'react-native';
+import { ActivityIndicator, LogBox, StyleSheet, Text, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import ErrorBoundary from './components/ErrorBoundary';
 import { migrateAsyncStorageCareTo876 } from './utils/migrateAsyncStorageCareTo876';
-import { ENABLE_DEBUG_LOGS } from './constants';
+import { COLORS, ENABLE_DEBUG_LOGS } from './constants';
+
+const STARTUP_TIMEOUT_MS = 4000;
 
 // Suppress Expo notifications warning in Expo Go (SDK 53+)
 LogBox.ignoreLogs([
@@ -34,26 +39,78 @@ import AppOriginal from './App-original';
  */
 export default function App() {
   const [storageReady, setStorageReady] = useState(false);
+  const [startupMessage, setStartupMessage] = useState('Preparing 876Nurses...');
+  const [startupError, setStartupError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
 
+    const startupTimeout = setTimeout(() => {
+      if (!cancelled) {
+        setStartupMessage('Finishing app startup...');
+        setStorageReady(true);
+      }
+    }, STARTUP_TIMEOUT_MS);
+
     (async () => {
-      await migrateAsyncStorageCareTo876();
-      if (!cancelled) setStorageReady(true);
+      try {
+        await migrateAsyncStorageCareTo876();
+      } catch (error) {
+        console.error('Startup storage migration failed:', error);
+        if (!cancelled) {
+          setStartupError('Startup storage migration failed. Continuing...');
+          setStartupMessage('Starting app...');
+        }
+      } finally {
+        clearTimeout(startupTimeout);
+        if (!cancelled) setStorageReady(true);
+      }
     })();
 
     return () => {
       cancelled = true;
+      clearTimeout(startupTimeout);
     };
   }, []);
 
-  if (!storageReady) return null;
+  if (!storageReady) {
+    return (
+      <View style={styles.startupContainer}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.startupText}>{startupMessage}</Text>
+        {!!startupError && <Text style={styles.startupSubtext}>{startupError}</Text>}
+      </View>
+    );
+  }
 
   return (
-    <ErrorBoundary>
-      <AppOriginal />
-    </ErrorBoundary>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ErrorBoundary>
+        <AppOriginal />
+      </ErrorBoundary>
+    </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  startupContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 24,
+  },
+  startupText: {
+    marginTop: 16,
+    color: COLORS.text,
+    fontSize: 16,
+    textAlign: 'center',
+  },
+  startupSubtext: {
+    marginTop: 8,
+    color: COLORS.textMuted,
+    fontSize: 13,
+    textAlign: 'center',
+  },
+});
 

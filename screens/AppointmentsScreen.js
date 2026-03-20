@@ -488,9 +488,12 @@ export default function AppointmentsScreen({ navigation, route }) {
     const fallbackName =
       appointment.preferredNurseName ||
       appointment.requestedNurseName ||
+      appointment.primaryNurseName ||
+      appointment.selectedNurseName ||
       appointment.requestedNurse ||
       appointment.preferredNurse?.name ||
       appointment.requestedNurse?.name ||
+      appointment.primaryNurse?.name ||
       null;
 
     if (!fallbackName) {
@@ -518,7 +521,7 @@ export default function AppointmentsScreen({ navigation, route }) {
     : null;
 
   const selectedAppointmentStatusLower = String(selectedAppointment?.status || '').toLowerCase();
-  const isPendingLikeAppointment = ['pending', 'requested', 'awaiting', 'unassigned'].includes(selectedAppointmentStatusLower);
+  const isPendingLikeAppointment = ['pending', 'assigned', 'requested', 'awaiting', 'unassigned'].includes(selectedAppointmentStatusLower);
 
   const parseDateValue = (value) => {
     if (!value) {
@@ -982,7 +985,11 @@ export default function AppointmentsScreen({ navigation, route }) {
       const allInvoices = await InvoiceService.getAllInvoices();
       const matching = (allInvoices || []).filter((inv) => {
         const invAppointmentId = String(inv?.appointmentId || inv?.relatedAppointmentId || inv?.appointmentID || '');
-        return invAppointmentId && invAppointmentId === String(resolvedAppointmentId);
+        const matchByApptId = invAppointmentId && invAppointmentId === String(resolvedAppointmentId);
+        // Fallback: the appointment stores the invoiceId from the deposit flow, so find
+        // the matching invoice even if its appointmentId is a temp value.
+        const matchByInvoiceId = appointment?.invoiceId && inv?.invoiceId === appointment.invoiceId;
+        return matchByApptId || matchByInvoiceId;
       });
 
       const invoice = matching.length > 0 ? matching[0] : null;

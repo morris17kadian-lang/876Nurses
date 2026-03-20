@@ -47,6 +47,8 @@ import useWindowDimensions from '../hooks/useWindowDimensions';
 import { getNurseName, formatAddress } from '../utils/formatters';
 import ApiService from '../services/ApiService';
 import FirebaseService from '../services/FirebaseService';
+import { db } from '../config/firebase';
+import { collection, getDocs } from 'firebase/firestore';
 import InvoiceService from '../services/InvoiceService';
 import PushNotificationService from '../services/PushNotificationService';
 
@@ -460,6 +462,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   const [notePhotoUris, setNotePhotoUris] = useState([]);
   const [notePhotoPickerBusy, setNotePhotoPickerBusy] = useState(false);
   const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [noteVitals, setNoteVitals] = useState({ bpSystolic: '', bpDiastolic: '', heartRate: '', temperature: '', oxygenSaturation: '' });
   const [notePhotoPreviewVisible, setNotePhotoPreviewVisible] = useState(false);
   const [notePhotoPreviewUri, setNotePhotoPreviewUri] = useState('');
   const [pendingRecurringShifts, setPendingRecurringShifts] = useState([]);
@@ -2550,6 +2553,45 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         // Exclude completed shifts
         if (statusNormalized === 'completed') return false;
 
+        // Check if the recurring period has ended - if so, exclude from Booked
+        const parseDateOnlyLocal = (val) => {
+          if (!val) return null;
+          if (val instanceof Date && Number.isFinite(val.getTime())) return val;
+          const raw = String(val).trim();
+          if (!raw) return null;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+            const d = new Date(`${raw}T00:00:00`);
+            return Number.isFinite(d.getTime()) ? d : null;
+          }
+          const d = new Date(raw);
+          return Number.isFinite(d.getTime()) ? d : null;
+        };
+
+        const periodEnd = parseDateOnlyLocal(
+          req?.recurringPeriodEnd ||
+          req?.endDate ||
+          req?.recurringEndDate ||
+          req?.appointmentEndDate ||
+          null
+        );
+
+        // Check if nurse has clocked out
+        const hasClockOut = hasClockedOutByMe(req) || hasAnyClockOut(req);
+        
+        // If the period has fully ended OR if on the last day and nurse has clocked out, exclude from Booked
+        if (periodEnd) {
+          const now = new Date();
+          const endOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
+          const startOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 0, 0, 0, 0);
+          const periodFullyEnded = now > endOfLastDay;
+          const isLastDay = now >= startOfLastDay && now <= endOfLastDay;
+          
+          // If period ended OR on last day with clock-out, it belongs in Completed, not Booked
+          if ((periodFullyEnded || (isLastDay && hasClockOut))) {
+            return false;
+          }
+        }
+
         // Recurring schedules can have clock-out history per occurrence.
         // Do not exclude the whole series from Booked just because a clock-out exists.
 
@@ -2737,6 +2779,40 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         // Some recurring requests can have clock-in data while status lags behind.
         if (statusNormalized !== 'active' && !hasClockIn) return false;
 
+        // Check if recurring period has ended - if so exclude from Active
+        const parseDateOnlyLocal = (val) => {
+          if (!val) return null;
+          if (val instanceof Date && Number.isFinite(val.getTime())) return val;
+          const raw = String(val).trim();
+          if (!raw) return null;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+            const d = new Date(`${raw}T00:00:00`);
+            return Number.isFinite(d.getTime()) ? d : null;
+          }
+          const d = new Date(raw);
+          return Number.isFinite(d.getTime()) ? d : null;
+        };
+
+        const periodEnd = parseDateOnlyLocal(
+          req?.recurringPeriodEnd ||
+          req?.endDate ||
+          req?.recurringEndDate ||
+          req?.appointmentEndDate ||
+          null
+        );
+
+        // If period has ended and nurse clocked out, exclude from Active (should be in Completed)
+        if (periodEnd) {
+          const now = new Date();
+          const endOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
+          const periodFullyEnded = now > endOfLastDay;
+          
+          // If nurse clocked in and period ended, check if they also clocked out
+          if (periodFullyEnded && !iHaveClockedIn) {
+            return false; // Exclude from Active if no active clock-in
+          }
+        }
+
         // DEV: Debug filter decision for test shift
         if (__DEV__ && (req?.id || req?._id) === 'IFUO3HmNuZ5sO74KFQGb') {
           const myEntry = getMyClockEntry(req?.clockByNurse);
@@ -2922,48 +2998,41 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         // If the period ended in the past and we have any clock-out history, treat it as completed for UI.
         if (periodEnd) {
           const now = new Date();
-          const startOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 0, 0, 0, 0);
-          const endOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
-          const hasClockOut = hasClockedOutByMe(req) || hasAnyClockOut(req);
-          const hasActiveClockIn = hasActiveClockInByMe(req);
-          const onOrAfterLastDay = now >= startOfLastDay;
-          const periodFullyEnded = now > endOfLastDay;
-          
-          // DEV: Debug completed check for test shift
-          if (__DEV__ && (req?.id || req?._id) === 'IFUO3HmNuZ5sO74KFQGb') {
-            const myEntry = getMyClockEntry(req?.clockByNurse);
-            console.log('[Completed Recurring Filter][DEBUG]', {
-              shiftId: req?.id || req?._id,
-              status: req?.status,
-              periodEnd: periodEnd ? periodEnd.toISOString() : null,
-              startOfLastDay: startOfLastDay.toISOString(),
-              endOfLastDay: endOfLastDay.toISOString(),
-              now: now.toISOString(),
-              onOrAfterLastDay,
-              periodFullyEnded,
-              hasClockOut,
-              hasActiveClockIn,
-              hasClockedOutByMe: hasClockedOutByMe(req),
-              hasAnyClockOut: hasAnyClockOut(req),
-              myClockEntry: myEntry ? {
-                lastClockInTime: myEntry.lastClockInTime || null,
-                lastClockOutTime: myEntry.lastClockOutTime || null,
-                clockEntriesCount: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.length : 0,
-                allSessions: myEntry.clockEntries || [],
-              } : null,
-              willIncludeInCompleted: (onOrAfterLastDay && hasClockOut && !hasActiveClockIn) || (periodFullyEnded && hasClockOut),
-            });
+            const endOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
+            const startOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 0, 0, 0, 0);
+            const hasClockOut = hasClockedOutByMe(req) || hasAnyClockOut(req);
+            const periodFullyEnded = now > endOfLastDay;
+            const isLastDay = now >= startOfLastDay && now <= endOfLastDay;
+            
+            // DEV: Debug completed check for test shift
+            if (__DEV__ && (req?.id || req?._id) === 'IFUO3HmNuZ5sO74KFQGb') {
+              const myEntry = getMyClockEntry(req?.clockByNurse);
+              console.log('[Completed Recurring Filter][DEBUG]', {
+                shiftId: req?.id || req?._id,
+                status: req?.status,
+                periodEnd: periodEnd ? periodEnd.toISOString() : null,
+                endOfLastDay: endOfLastDay.toISOString(),
+                now: now.toISOString(),
+                periodFullyEnded,
+                hasClockOut,
+                hasClockedOutByMe: hasClockedOutByMe(req),
+                hasAnyClockOut: hasAnyClockOut(req),
+                myClockEntry: myEntry ? {
+                  lastClockInTime: myEntry.lastClockInTime || null,
+                  lastClockOutTime: myEntry.lastClockOutTime || null,
+                  clockEntriesCount: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.length : 0,
+                  allSessions: myEntry.clockEntries || [],
+                } : null,
+                willIncludeInCompleted: (periodFullyEnded || (isLastDay && hasClockOut)),
+              });
+            }
+            
+            // Mark as completed if period ended OR on last day with clock-out
+            if (periodFullyEnded || (isLastDay && hasClockOut)) return true;
           }
-          
-          // If we're on or after the last day and have clocked out with no active clock-in, mark as completed
-          if (onOrAfterLastDay && hasClockOut && !hasActiveClockIn) return true;
-          
-          // Or if the entire period has ended and we have any clock-out
-          if (periodFullyEnded && hasClockOut) return true;
-        }
 
-        return false;
-      })
+          return false;
+        })
       .map((req) => ({
         ...req,
         status: 'completed',
@@ -2999,6 +3068,11 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
     const flexibleMatches = sourceAppointments.filter((apt) => {
       if (!apt) return false;
+      // Only match appointments where this nurse is the PRIMARY assigned nurse.
+      // Backup/emergency nurses are surfaced separately via pendingCoverageAppointmentsForMe
+      // (which requires an explicit pending coverage request targeting them).
+      // Including backupNurses/emergencyBackupNurses here would make every backup nurse
+      // see all appointments they are listed on, even when no coverage was requested.
       const isMatch = (
         matchesMine(apt.nurseId) ||
         matchesMine(apt.assignedNurseId) ||
@@ -3008,9 +3082,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         matchesMine(apt.nurseCode) ||
         matchesMine(apt.staffCode) ||
         matchesMine(apt.nurse?.id) ||
-        matchesMine(apt.nurse?._id) ||
-        listIncludesMine(apt.backupNurses) ||
-        listIncludesMine(apt.emergencyBackupNurses)
+        matchesMine(apt.nurse?._id)
       );
       return isMatch;
     });
@@ -3336,9 +3408,10 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
   // Time tracking functions
   useEffect(() => {
+    // Update time every 15 seconds for more responsive clock-in button
     const timer = setInterval(() => {
       setCurrentTime(new Date());
-    }, 60000);
+    }, 15000);
 
     return () => clearInterval(timer);
   }, []);
@@ -3443,6 +3516,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     setNotePhotoUris([]);
     setIsSavingNotes(false);
     setNotePhotoPickerBusy(false);
+    setNoteVitals({ bpSystolic: '', bpDiastolic: '', heartRate: '', temperature: '', oxygenSaturation: '' });
     if (shouldReopenDetails) {
       setTimeout(() => {
         setDetailsModalVisible(true);
@@ -3896,13 +3970,14 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             : (selectedItemForNotes.nurseNotes || '');
           const finalNotes = appendTimestampedNotes(existingNotes, shiftNotes);
           const uploadedPhotoUrls = await uploadNotePhotos(selectedItemForNotes.id, notePhotoUris);
+          const hasVitals = Object.values(noteVitals).some(v => String(v).trim().length > 0);
 
           // Update the notes in the appointment/shift
           await updateItemNotes(
             selectedItemForNotes.id,
             finalNotes,
             isShiftItem,
-            { nurseNotePhotos: uploadedPhotoUrls }
+            { nurseNotePhotos: uploadedPhotoUrls, ...(hasVitals ? { nurseVitals: noteVitals } : {}) }
           );
           
           // Update local state to reflect the notes and photos
@@ -3924,6 +3999,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
               nurseNotes: finalNotes,
               ...(isShiftItem ? { notes: finalNotes } : null),
               nurseNotePhotos: mergedPhotos,
+              ...(hasVitals ? { nurseVitals: noteVitals } : {}),
               updatedAt: nowIso,
             };
           });
@@ -5972,6 +6048,53 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       const startTime = new Date().toISOString();
       const locationData = await createLocationPayload(latitude, longitude, startTime);
       
+      // Check if nurse is late and notify supervisor
+      const scheduledStartTime = getShiftScheduledStartDateTime(shift);
+      if (scheduledStartTime) {
+        const actualStartTime = new Date(startTime);
+        const minutesLate = (actualStartTime - scheduledStartTime) / (1000 * 60);
+        
+        if (minutesLate >= 10) {
+          // Notify supervisor about late clock-in
+          try {
+            const adminsSnapshot = await getDocs(collection(db, 'admins'));
+            const supervisors = adminsSnapshot.docs
+              .map(doc => ({ id: doc.id, ...doc.data() }))
+              .filter(admin => {
+                const notificationRole = admin.emailNotificationRole?.toLowerCase();
+                return notificationRole === 'full_access' || 
+                       notificationRole === 'scheduling_only' ||
+                       admin.title?.toLowerCase().includes('supervisor') ||
+                       admin.title?.toLowerCase().includes('manager');
+              });
+            
+            const nurseName = currentNurse?.name || user?.name || user?.username || 'A nurse';
+            const shiftDescription = shift.service || shift.serviceType || 'Shift';
+            const minutesLateRounded = Math.round(minutesLate);
+            
+            for (const supervisor of supervisors) {
+              await sendNotificationToUser(
+                supervisor.id,
+                'Nurse Late Clock-In',
+                `${nurseName} clocked in ${minutesLateRounded} minutes late for ${shiftDescription} (scheduled: ${scheduledStartTime.toLocaleTimeString()})`,
+                {
+                  type: 'late_clock_in',
+                  shiftId: shift.id,
+                  nurseId: nurseId,
+                  nurseName: nurseName,
+                  minutesLate: minutesLateRounded,
+                  scheduledTime: scheduledStartTime.toISOString(),
+                  actualTime: startTime,
+                }
+              );
+            }
+          } catch (notificationError) {
+            console.error('Failed to notify supervisor about late clock-in:', notificationError);
+            // Don't block clock-in if notification fails
+          }
+        }
+      }
+      
       const startResult = await startShift(shift.id, startTime, nurseId, { clockInLocation: locationData });
       const resolvedStartTime = startResult?.startTime || startTime;
       const resolvedLocation = startResult?.clockInLocation || locationData;
@@ -6227,6 +6350,55 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       const { latitude, longitude } = location.coords;
       const locationData = await createLocationPayload(latitude, longitude, startTime);
 
+      // Check if nurse is late and notify supervisor
+      const scheduledStartTime = getShiftScheduledStartDateTime(appointment);
+      if (scheduledStartTime) {
+        const actualStartTime = new Date(startTime);
+        const minutesLate = (actualStartTime - scheduledStartTime) / (1000 * 60);
+        
+        if (minutesLate >= 10) {
+          // Notify supervisor about late clock-in
+          try {
+            const adminsSnapshot = await getDocs(collection(db, 'admins'));
+            const supervisors = adminsSnapshot.docs
+              .map(doc => ({ id: doc.id, ...doc.data() }))
+              .filter(admin => {
+                const notificationRole = admin.emailNotificationRole?.toLowerCase();
+                return notificationRole === 'full_access' || 
+                       notificationRole === 'scheduling_only' ||
+                       admin.title?.toLowerCase().includes('supervisor') ||
+                       admin.title?.toLowerCase().includes('manager');
+              });
+            
+            const nurseName = currentNurse?.name || user?.name || user?.username || 'A nurse';
+            const appointmentDescription = appointment.service || appointment.serviceType || 'Appointment';
+            const patientName = appointment.patientName || appointment.clientName || '';
+            const fullDescription = patientName ? `${appointmentDescription} with ${patientName}` : appointmentDescription;
+            const minutesLateRounded = Math.round(minutesLate);
+            
+            for (const supervisor of supervisors) {
+              await sendNotificationToUser(
+                supervisor.id,
+                'Nurse Late Clock-In',
+                `${nurseName} clocked in ${minutesLateRounded} minutes late for ${fullDescription} (scheduled: ${scheduledStartTime.toLocaleTimeString()})`,
+                {
+                  type: 'late_clock_in',
+                  appointmentId: appointment.id,
+                  nurseId: nurseId,
+                  nurseName: nurseName,
+                  minutesLate: minutesLateRounded,
+                  scheduledTime: scheduledStartTime.toISOString(),
+                  actualTime: startTime,
+                }
+              );
+            }
+          } catch (notificationError) {
+            console.error('Failed to notify supervisor about late clock-in:', notificationError);
+            // Don't block clock-in if notification fails
+          }
+        }
+      }
+
       await clockInAppointment(appointment.id, {
         startTime,
         clockInLocation: locationData,
@@ -6452,9 +6624,36 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         // Include confirmed appointments (status='confirmed') and approved recurring shifts
         const activeRecurringIds = new Set((activeRecurringShifts || []).map(s => s?.id).filter(Boolean));
         const completedRecurringIds = new Set((completedRecurringShifts || []).map(s => s?.id).filter(Boolean));
+        
+        // Helper to check if nurse has clocked out for a shift
+        const hasClockOut = (shift) => {
+          const clockByNurse = shift?.clockByNurse;
+          if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+          
+          for (const [key, entry] of Object.entries(clockByNurse)) {
+            if (!entry || typeof entry !== 'object') continue;
+            
+            // Check if this entry belongs to current nurse
+            const isMyEntry = matchesMine(key) || (entry.nurseId && matchesMine(entry.nurseId));
+            if (!isMyEntry) continue;
+            
+            // Check if there's a clock-out time
+            const hasOutTime = Boolean(
+              entry.lastClockOutTime ||
+              entry.clockOutTime ||
+              entry.completedAt ||
+              entry.actualEndTime
+            );
+            
+            if (hasOutTime) return true;
+          }
+          return false;
+        };
+        
         const filteredAcceptedRecurring = (acceptedRecurringShifts || []).filter((s) => {
           const id = getAnyId(s);
-          return !activeRecurringIds.has(id) && !activeLocalIds.has(id) && !completedRecurringIds.has(id);
+          // Exclude if active, completed, or if the nurse has already clocked out
+          return !activeRecurringIds.has(id) && !activeLocalIds.has(id) && !completedRecurringIds.has(id) && !hasClockOut(s);
         });
         const bookedItems = deduplicateByID([...bookedAppointments, ...filteredApprovedShifts, ...filteredAcceptedRecurring]);
         
@@ -10102,6 +10301,82 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                 />
 
                 {actionType === 'addnotes' && (
+                  <View style={styles.vitalsModalSection}>
+                    <Text style={styles.vitalsModalSectionTitle}>
+                      Patient Vitals{' '}
+                      <Text style={styles.vitalsModalOptional}>(optional)</Text>
+                    </Text>
+                    <View style={styles.vitalsModalRow}>
+                      <View style={styles.vitalsModalField}>
+                        <Text style={styles.vitalsModalLabel}>BP (Sys)</Text>
+                        <TextInput
+                          style={styles.vitalsModalInput}
+                          placeholder="120"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={noteVitals.bpSystolic}
+                          onChangeText={(t) => setNoteVitals(prev => ({ ...prev, bpSystolic: t }))}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                      <View style={styles.vitalsModalField}>
+                        <Text style={styles.vitalsModalLabel}>BP (Dia)</Text>
+                        <TextInput
+                          style={styles.vitalsModalInput}
+                          placeholder="80"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={noteVitals.bpDiastolic}
+                          onChangeText={(t) => setNoteVitals(prev => ({ ...prev, bpDiastolic: t }))}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                    </View>
+                    <View style={styles.vitalsModalRow}>
+                      <View style={styles.vitalsModalField}>
+                        <Text style={styles.vitalsModalLabel}>HR (bpm)</Text>
+                        <TextInput
+                          style={styles.vitalsModalInput}
+                          placeholder="72"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={noteVitals.heartRate}
+                          onChangeText={(t) => setNoteVitals(prev => ({ ...prev, heartRate: t }))}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                      <View style={styles.vitalsModalField}>
+                        <Text style={styles.vitalsModalLabel}>Temp (°F)</Text>
+                        <TextInput
+                          style={styles.vitalsModalInput}
+                          placeholder="98.6"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={noteVitals.temperature}
+                          onChangeText={(t) => setNoteVitals(prev => ({ ...prev, temperature: t }))}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                    </View>
+                    <View style={styles.vitalsModalRow}>
+                      <View style={styles.vitalsModalField}>
+                        <Text style={styles.vitalsModalLabel}>SpO₂ (%)</Text>
+                        <TextInput
+                          style={styles.vitalsModalInput}
+                          placeholder="98"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={noteVitals.oxygenSaturation}
+                          onChangeText={(t) => setNoteVitals(prev => ({ ...prev, oxygenSaturation: t }))}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                      <View style={{ flex: 1 }} />
+                    </View>
+                  </View>
+                )}
+
+                {actionType === 'addnotes' && (
                   <View style={styles.notePhotosSection}>
                     <TouchableOpacity
                       style={styles.notePhotosAddButton}
@@ -11072,6 +11347,56 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
               const { latitude, longitude } = location.coords;
               const startTime = new Date().toISOString();
               const locationData = await createLocationPayload(latitude, longitude, startTime);
+
+              // Check if nurse is late and notify supervisor
+              const scheduledStartTime = getShiftScheduledStartDateTime(target);
+              if (scheduledStartTime) {
+                const actualStartTime = new Date(startTime);
+                const minutesLate = (actualStartTime - scheduledStartTime) / (1000 * 60);
+                
+                if (minutesLate >= 10) {
+                  // Notify supervisor about late clock-in for recurring shift
+                  try {
+                    const adminsSnapshot = await getDocs(collection(db, 'admins'));
+                    const supervisors = adminsSnapshot.docs
+                      .map(doc => ({ id: doc.id, ...doc.data() }))
+                      .filter(admin => {
+                        const notificationRole = admin.emailNotificationRole?.toLowerCase();
+                        return notificationRole === 'full_access' || 
+                               notificationRole === 'scheduling_only' ||
+                               admin.title?.toLowerCase().includes('supervisor') ||
+                               admin.title?.toLowerCase().includes('manager');
+                      });
+                    
+                    const nurseName = currentNurse?.name || user?.name || user?.username || 'A nurse';
+                    const shiftDescription = target.service || target.serviceType || target.shiftType || 'Recurring Shift';
+                    const patientName = target.patientName || target.clientName || '';
+                    const fullDescription = patientName ? `${shiftDescription} with ${patientName}` : shiftDescription;
+                    const minutesLateRounded = Math.round(minutesLate);
+                    
+                    for (const supervisor of supervisors) {
+                      await sendNotificationToUser(
+                        supervisor.id,
+                        'Nurse Late Clock-In',
+                        `${nurseName} clocked in ${minutesLateRounded} minutes late for ${fullDescription} (scheduled: ${scheduledStartTime.toLocaleTimeString()})`,
+                        {
+                          type: 'late_clock_in',
+                          shiftId: shiftId,
+                          nurseId: nurseId,
+                          nurseName: nurseName,
+                          minutesLate: minutesLateRounded,
+                          scheduledTime: scheduledStartTime.toISOString(),
+                          actualTime: startTime,
+                          isRecurring: true,
+                        }
+                      );
+                    }
+                  } catch (notificationError) {
+                    console.error('Failed to notify supervisor about late clock-in:', notificationError);
+                    // Don't block clock-in if notification fails
+                  }
+                }
+              }
 
               const startResult = await startShift(shiftId, startTime, nurseId, { clockInLocation: locationData });
               const resolvedStartTime = startResult?.startTime || startTime;
@@ -12731,6 +13056,51 @@ const styles = StyleSheet.create({
   photoPreviewImage: {
     width: '100%',
     height: '100%',
+  },
+  vitalsModalSection: {
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    padding: 12,
+    backgroundColor: COLORS.backgroundLight,
+  },
+  vitalsModalSectionTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 10,
+  },
+  vitalsModalOptional: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textMuted,
+  },
+  vitalsModalRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 10,
+  },
+  vitalsModalField: {
+    flex: 1,
+  },
+  vitalsModalLabel: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.textMuted,
+    marginBottom: 4,
+  },
+  vitalsModalInput: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    backgroundColor: COLORS.white,
+    textAlign: 'center',
   },
   notesModalButtonRow: {
     flexDirection: 'row',

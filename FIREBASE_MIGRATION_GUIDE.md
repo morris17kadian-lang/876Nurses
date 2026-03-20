@@ -65,6 +65,27 @@ const firebaseConfig = {
    - Phone Authentication
    - Social providers
 
+### Step 6b: Email Verification (6-digit code, no links)
+
+This app enforces email verification before allowing sign-in.
+To avoid Firebase-hosted verification links/domains, it uses an in-app **6-digit verification code**:
+
+- Cloud Function `requestEmailVerificationCode` emails a 6-digit code.
+- Cloud Function `verifyEmailVerificationCode` validates the code and sets `emailVerified=true` on the Firebase Auth user server-side.
+
+Setup requirements:
+
+1. Ensure the email service is configured (see `EMAIL_SERVICE_SETUP.md`).
+2. Deploy Cloud Functions:
+
+```bash
+firebase deploy --only functions
+```
+
+Notes:
+- No Firebase Hosting custom domain or DNS changes are required for this verification approach.
+- The code records are stored server-side in Firestore (`emailVerificationCodes/{uid}`) and are not meant to be accessed directly by the client.
+
 ## Step 7: Create Firestore Security Rules
 
 In Firestore **Rules** tab, add these rules for development:

@@ -4,7 +4,8 @@ import { getFirestore, collection, addDoc, serverTimestamp } from 'firebase/fire
  * Queue a welcome email for a new user by writing to Firestore /mail collection.
  * The deployed sendQueuedEmailOnCreate Cloud Function will automatically send it.
  * 
- * Call this after successful user registration.
+ * Call this after the user has verified their email and successfully signed in
+ * (typically on the first verified login).
  * 
  * @param {Object} user - The Firebase Auth user object
  * @param {string} user.email - User's email address
@@ -192,7 +193,7 @@ export async function queueWelcomeEmail(user) {
                 </tr>
                 <tr>
                   <td align="center" style="padding:0 24px 40px 24px;">
-                    <a href="876nurses://login" style="display:inline-block;background:#2196F3;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:30px;font-weight:800;font-size:15px;box-shadow:0 4px 12px rgba(33,150,243,0.3);">Open App</a>
+                    <a href="nurses876://" style="display:inline-block;background:#2196F3;color:#ffffff;text-decoration:none;padding:14px 32px;border-radius:30px;font-weight:800;font-size:15px;box-shadow:0 4px 12px rgba(33,150,243,0.3);">Open App</a>
                   </td>
                 </tr>
               </table>

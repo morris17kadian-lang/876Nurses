@@ -628,7 +628,7 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
   useFocusEffect(
     React.useCallback(() => {
       buildClientsFromAppointments();
-    }, [allAppointments, firebaseUsers])
+    }, [allAppointments, firebaseUsers, shiftRequests])
   );
 
   // Handle reopening client details modal when returning from invoice
@@ -925,14 +925,108 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
       );
     };
 
+    const parseDateOnlyLocal = (value) => {
+      if (!value) return null;
+      if (value instanceof Date && Number.isFinite(value.getTime())) return value;
+      const raw = String(value).trim();
+      if (!raw) return null;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        const parsed = new Date(`${raw}T00:00:00`);
+        return Number.isFinite(parsed.getTime()) ? parsed : null;
+      }
+      const parsed = new Date(raw);
+      return Number.isFinite(parsed.getTime()) ? parsed : null;
+    };
+
+    const hasAnyShiftClockOut = (shift) => {
+      if (!shift || typeof shift !== 'object') return false;
+      if (shift.actualEndTime || shift.clockOutTime || shift.completedAt || shift.lastClockOutTime) {
+        return true;
+      }
+
+      const clockByNurse = shift.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+
+      return Object.values(clockByNurse).some((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+        return Boolean(
+          entry.lastClockOutTime ||
+          entry.clockOutTime ||
+          entry.completedAt ||
+          entry.actualEndTime
+        );
+      });
+    };
+
+    const isShiftCompletedForClient = (shift) => {
+      if (!shift || typeof shift !== 'object') return false;
+
+      const statusNormalized = String(shift?.status || '').trim().toLowerCase();
+      if (statusNormalized === 'completed' || shift?.finalCompletedAt) return true;
+
+      const hasClockOut = hasAnyShiftClockOut(shift);
+      if (!hasClockOut) return false;
+
+      const periodEnd = parseDateOnlyLocal(
+        shift?.recurringPeriodEnd ||
+          shift?.endDate ||
+          shift?.recurringEndDate ||
+          shift?.appointmentEndDate ||
+          shift?.date ||
+          shift?.scheduledDate ||
+          null
+      );
+
+      if (!periodEnd) return false;
+
+      const now = new Date();
+      const startOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 0, 0, 0, 0);
+      const endOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
+      const periodFullyEnded = now > endOfLastDay;
+      const isLastDay = now >= startOfLastDay && now <= endOfLastDay;
+
+      return periodFullyEnded || isLastDay;
+    };
+
+    const isShiftUpcomingForClient = (shift) => {
+      if (!shift || typeof shift !== 'object') return false;
+      if (isShiftCompletedForClient(shift)) return false;
+
+      const statusNormalized = String(shift?.status || '').trim().toLowerCase();
+      return (
+        statusNormalized === 'pending' ||
+        statusNormalized === 'approved' ||
+        statusNormalized === 'active'
+      );
+    };
+
     clientsMap.forEach((client) => {
       const related = Array.isArray(client.completedAppointments) ? client.completedAppointments : [];
 
-      client.appointments.completed = related.filter((a) => String(a?.status || '').toLowerCase() === 'completed').length;
-      client.appointments.upcoming = related.filter((a) => {
+      const allShifts = Array.isArray(shiftRequests) ? shiftRequests : [];
+      const matchingShifts = allShifts.filter((shift) => {
+        if (!shift) return false;
+        return (
+          normalizeId(shift?.clientId) === normalizeId(client.id) ||
+          normalizeId(shift?.patientId) === normalizeId(client.id) ||
+          normalizeEmailLower(shift?.clientEmail) === normalizeEmailLower(client.email) ||
+          normalizeEmailLower(shift?.patientEmail) === normalizeEmailLower(client.email) ||
+          normalizeNameLower(shift?.clientName) === normalizeNameLower(client.name) ||
+          normalizeNameLower(shift?.patientName) === normalizeNameLower(client.name)
+        );
+      });
+
+      const completedAppointmentCount = related.filter((a) => String(a?.status || '').toLowerCase() === 'completed').length;
+      const upcomingAppointmentCount = related.filter((a) => {
         const s = String(a?.status || '').toLowerCase();
         return s && s !== 'completed' && s !== 'cancelled' && s !== 'canceled' && s !== 'declined';
       }).length;
+
+      const completedShiftCount = matchingShifts.filter((shift) => isShiftCompletedForClient(shift)).length;
+      const upcomingShiftCount = matchingShifts.filter((shift) => isShiftUpcomingForClient(shift)).length;
+
+      client.appointments.completed = completedAppointmentCount + completedShiftCount;
+      client.appointments.upcoming = upcomingAppointmentCount + upcomingShiftCount;
 
       const completed = related.filter((a) => String(a?.status || '').toLowerCase() === 'completed');
       const notes = [];
@@ -984,6 +1078,60 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
               null
           ),
         });
+      });
+
+      // Also include notes from shift requests (recurring shifts)
+      matchingShifts.forEach((shift, idx) => {
+        // Extract notes from split schedule nurse notes
+        const splitNotes = shift?.splitScheduleNurseNotes || [];
+        if (Array.isArray(splitNotes)) {
+          splitNotes.forEach((noteEntry, noteIdx) => {
+            const noteText = pickFirstText([
+              noteEntry?.note,
+              noteEntry?.notes,
+              noteEntry?.text,
+              noteEntry?.body,
+            ]);
+            if (!noteText) return;
+
+            const nurseName = resolveNurseDisplayName(noteEntry) || 'Assigned Nurse';
+            const dateCandidate = noteEntry?.timestamp || noteEntry?.date || noteEntry?.createdAt || shift?.createdAt || null;
+
+            notes.push({
+              id: `shift-split-note-${shift?.id || idx}-${noteIdx}`,
+              date: dateCandidate,
+              nurseName,
+              appointmentType: shift?.service || shift?.serviceType || shift?.shiftType || 'Recurring Shift',
+              notes: String(noteText).trim(),
+              photoUrls: normalizePhotoUrls(noteEntry?.photoUrls || noteEntry?.photos),
+            });
+          });
+        }
+
+        // Extract notes from general nurse notes field
+        const generalNoteText = pickFirstText([
+          shift?.nurseNotes,
+          shift?.notes,
+          shift?.completionNotes,
+        ]);
+        if (generalNoteText) {
+          const nurseName = resolveNurseDisplayName(shift) || 'Assigned Nurse';
+          const dateCandidate = shift?.completedAt || shift?.actualEndTime || shift?.updatedAt || shift?.createdAt || null;
+
+          notes.push({
+            id: shift?.id || shift?._id || `shift-note-${client.id}-${idx}`,
+            date: dateCandidate,
+            nurseName,
+            appointmentType: shift?.service || shift?.serviceType || shift?.shiftType || 'Recurring Shift',
+            notes: String(generalNoteText).trim(),
+            photoUrls: normalizePhotoUrls(
+              shift?.nurseNotePhotos ||
+                shift?.shiftDetails?.nurseNotePhotos ||
+                shift?.shift?.nurseNotePhotos ||
+                null
+            ),
+          });
+        }
       });
 
       client.medicalNotes = notes;

@@ -193,7 +193,7 @@ async function sendTestWelcomeEmail() {
 
                   <!-- Call to Action Button (Pill-shaped) -->
                   <div style="text-align:center;margin:32px 0;">
-                    <a href="876nurses://login" style="display:inline-block;padding:14px 40px;background:#2f62d7;color:#ffffff;text-decoration:none;font-size:16px;font-weight:600;border-radius:30px;box-shadow:0 4px 12px rgba(47,98,215,0.3);">
+                    <a href="nurses876://" style="display:inline-block;padding:14px 40px;background:#2f62d7;color:#ffffff;text-decoration:none;font-size:16px;font-weight:600;border-radius:30px;box-shadow:0 4px 12px rgba(47,98,215,0.3);">
                       Open App
                     </a>
                   </div>

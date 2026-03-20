@@ -3,6 +3,7 @@ const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { defineSecret, defineString } = require('firebase-functions/params');
@@ -25,6 +26,13 @@ if (isEmulator) {
 // Secrets (recommended for production)
 const GMAIL_USER_SECRET = defineSecret('GMAIL_USER');
 const GMAIL_APP_PASSWORD_SECRET = defineSecret('GMAIL_APP_PASSWORD');
+
+// Fygaro payment secrets
+const FYGARO_API_KEY_SECRET = defineSecret('FYGARO_API_KEY');
+const FYGARO_API_SECRET_SECRET = defineSecret('FYGARO_API_SECRET');
+const FYGARO_BUTTON_URL_PARAM = defineString('FYGARO_BUTTON_URL', {
+  default: 'https://www.fygaro.com/en/pb/9d69ee86-c4b4-454e-b73f-9d401c97f45b/',
+});
 
 // Non-secret defaults (can also be overridden by env vars)
 const GMAIL_FROM_EMAIL_PARAM = defineString('GMAIL_FROM_EMAIL', { default: '' });
@@ -338,6 +346,87 @@ const buildPasswordResetEmail = ({ firstName, resetLink }) => {
   const text = `Password Reset Request\n\nHi ${safeName},\n\nWe received a request to reset your password for your 876 Nurses account.\n\nTo reset your password, use the reset link in this email.\n\nIf you didn't request this reset, please ignore this email.\n\nThis email was sent by: ${companyLegalName}\n${companyAddress}\nWebsite: ${companyWebsite}\nInstagram: ${instagramUrl}\nWhatsApp: ${whatsAppUrl}`;
 
   return { subject, html, text };
+};
+
+const buildEmailVerificationCodeEmail = ({ firstName, code, ttlMinutes }) => {
+  const safeName = String(firstName || '').trim() || 'there';
+  const safeCode = String(code || '').trim();
+  const safeTtl = Number(ttlMinutes || 10);
+
+  const companyWebsite = process.env.COMPANY_WEBSITE || COMPANY_WEBSITE_PARAM.value() || 'https://www.876nurses.com';
+
+  const subject = 'Your 876Nurses verification code';
+  const text =
+    `Hi ${safeName},\n\n` +
+    `Your verification code is: ${safeCode}\n\n` +
+    `This code expires in ${safeTtl} minutes.\n\n` +
+    `Enter this code in the 876Nurses app to verify your email.\n\n` +
+    `If you didn't request this, you can ignore this email.\n\n` +
+    `Website: ${companyWebsite}\n`;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Verify your email</title>
+      </head>
+      <body style="margin:0;padding:0;background-color:#f5f7ff;font-family:Arial, sans-serif;color:#1f2a44;">
+        <div style="max-width:600px;margin:0 auto;padding:28px 18px;">
+          <div style="background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e6e9f5;">
+            <div style="padding:22px 22px 10px;">
+              <div style="font-size:18px;font-weight:800;color:#14213d;">876Nurses</div>
+              <div style="margin-top:12px;font-size:16px;">Hi ${escapeHtml(safeName)},</div>
+              <div style="margin-top:10px;font-size:14px;line-height:1.6;color:#42507a;">
+                Use the verification code below to verify your email in the 876Nurses app.
+              </div>
+            </div>
+            <div style="padding:0 22px 18px;">
+              <div style="background:#f1f4ff;border:1px solid #d7ddff;border-radius:14px;padding:16px;text-align:center;">
+                <div style="font-size:12px;letter-spacing:2px;color:#42507a;text-transform:uppercase;">Verification Code</div>
+                <div style="font-size:34px;font-weight:900;letter-spacing:6px;color:#2f62d7;margin-top:6px;">${escapeHtml(safeCode)}</div>
+              </div>
+              <div style="margin-top:12px;font-size:13px;color:#42507a;">This code expires in ${safeTtl} minutes.</div>
+              <div style="margin-top:14px;font-size:12px;color:#6b789d;line-height:1.6;">
+                If you didn't request this verification code, you can safely ignore this email.
+              </div>
+            </div>
+            <div style="padding:16px 22px;background:#f8f9ff;border-top:1px solid #e6e9f5;font-size:12px;color:#6b789d;">
+              Website: <a href="${escapeHtml(companyWebsite)}" style="color:#2f62d7;text-decoration:none;">${escapeHtml(companyWebsite)}</a>
+            </div>
+          </div>
+        </div>
+      </body>
+    </html>
+  `;
+
+  return { subject, html, text };
+};
+
+const escapeHtml = (value) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+const generateSixDigitCode = () => String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+
+const hashVerificationCode = (salt, code) =>
+  crypto.createHash('sha256').update(`${String(salt || '')}:${String(code || '')}`).digest('hex');
+
+const safeEqualHex = (leftHex, rightHex) => {
+  try {
+    const left = Buffer.from(String(leftHex || ''), 'hex');
+    const right = Buffer.from(String(rightHex || ''), 'hex');
+    if (left.length === 0 || right.length === 0) return false;
+    if (left.length !== right.length) return false;
+    return crypto.timingSafeEqual(left, right);
+  } catch (_) {
+    return false;
+  }
 };
 
 const normalizeCoverageStatus = (v) => String(v || '').trim().toLowerCase();
@@ -1029,6 +1118,191 @@ exports.requestPasswordResetEmail = onCall(
   }
 );
 
+// 2c) Custom email verification (6-digit code)
+// Avoids Firebase-hosted verification links entirely (no firebaseapp.com / web.app URLs shown).
+// Users verify by entering a code in-app; this function emails the code.
+exports.requestEmailVerificationCode = onCall(
+  {
+    region: 'us-central1',
+    serviceAccount: getRuntimeServiceAccountEmail(),
+    secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET],
+  },
+  async (request) => {
+    const email = String(request?.data?.email || '').trim().toLowerCase();
+
+    if (!isValidEmail(email)) {
+      throw new HttpsError('invalid-argument', 'A valid email address is required');
+    }
+
+    // Avoid user enumeration: always return success even if the user does not exist.
+    let userRecord = null;
+    try {
+      userRecord = await admin.auth().getUserByEmail(email);
+    } catch (_) {
+      return { success: true };
+    }
+
+    if (userRecord?.emailVerified) {
+      return { success: true, alreadyVerified: true };
+    }
+
+    const ttlMinutes = Number(process.env.EMAIL_VERIFICATION_CODE_TTL_MINUTES || 10);
+    const throttleSeconds = Number(process.env.EMAIL_VERIFICATION_CODE_THROTTLE_SECONDS || 60);
+    const ttlMs = Math.max(1, ttlMinutes) * 60 * 1000;
+    const throttleMs = Math.max(1, throttleSeconds) * 1000;
+
+    const uid = userRecord.uid;
+    const ref = admin.firestore().collection('emailVerificationCodes').doc(uid);
+
+    const nowMs = Date.now();
+    const nowTs = admin.firestore.Timestamp.fromMillis(nowMs);
+
+    let resendCount = 0;
+    try {
+      const existingSnap = await ref.get();
+      if (existingSnap.exists) {
+        const existing = existingSnap.data() || {};
+        resendCount = Number(existing.resendCount || 0);
+        const lastSentAt = existing.lastSentAt;
+        const lastSentMs = lastSentAt?.toMillis ? lastSentAt.toMillis() : null;
+        if (lastSentMs && nowMs - lastSentMs < throttleMs) {
+          const retryAfterSeconds = Math.ceil((throttleMs - (nowMs - lastSentMs)) / 1000);
+          return { success: true, throttled: true, retryAfterSeconds };
+        }
+      }
+    } catch (_) {
+      // Non-fatal.
+    }
+
+    const code = generateSixDigitCode();
+    const salt = crypto.randomBytes(16).toString('hex');
+    const codeHash = hashVerificationCode(salt, code);
+    const expiresAt = admin.firestore.Timestamp.fromMillis(nowMs + ttlMs);
+
+    await ref.set(
+      {
+        email,
+        codeHash,
+        salt,
+        createdAt: nowTs,
+        lastSentAt: nowTs,
+        expiresAt,
+        attemptCount: 0,
+        resendCount: resendCount + 1,
+      },
+      { merge: true }
+    );
+
+    let displayName = userRecord?.displayName || '';
+    if (!displayName) {
+      displayName = await lookupProfileNameByEmail(email);
+    }
+    const firstName = extractFirstName(displayName) || 'there';
+
+    const { subject, html, text } = buildEmailVerificationCodeEmail({ firstName, code, ttlMinutes });
+
+    const fromEmailOverride = process.env.EMAIL_VERIFICATION_FROM_EMAIL || '';
+    const fromNameOverride = process.env.EMAIL_VERIFICATION_FROM_NAME || '';
+
+    await sendMail({
+      to: email,
+      subject,
+      html,
+      text,
+      fromEmailOverride,
+      fromNameOverride,
+    });
+
+    return { success: true, sent: true, ttlMinutes };
+  }
+);
+
+// Users verify by entering the 6-digit code in-app; this function checks the code and marks the user verified.
+exports.verifyEmailVerificationCode = onCall(
+  {
+    region: 'us-central1',
+    serviceAccount: getRuntimeServiceAccountEmail(),
+  },
+  async (request) => {
+    const email = String(request?.data?.email || '').trim().toLowerCase();
+    const code = String(request?.data?.code || '').trim();
+
+    if (!isValidEmail(email)) {
+      throw new HttpsError('invalid-argument', 'A valid email address is required');
+    }
+
+    if (!/^\d{6}$/.test(code)) {
+      throw new HttpsError('invalid-argument', 'A valid 6-digit code is required');
+    }
+
+    let userRecord = null;
+    try {
+      userRecord = await admin.auth().getUserByEmail(email);
+    } catch (_) {
+      return { success: false, errorCode: 'invalid', error: 'Invalid code. Please request a new code.' };
+    }
+
+    if (userRecord?.emailVerified) {
+      return { success: true, alreadyVerified: true };
+    }
+
+    const maxAttempts = Number(process.env.EMAIL_VERIFICATION_CODE_MAX_ATTEMPTS || 10);
+    const uid = userRecord.uid;
+    const ref = admin.firestore().collection('emailVerificationCodes').doc(uid);
+    const snap = await ref.get();
+
+    if (!snap.exists) {
+      return { success: false, errorCode: 'missing', error: 'Verification code not found. Please request a new code.' };
+    }
+
+    const data = snap.data() || {};
+    const expiresAt = data.expiresAt;
+    const expiresMs = expiresAt?.toMillis ? expiresAt.toMillis() : 0;
+    const nowMs = Date.now();
+
+    if (expiresMs && nowMs > expiresMs) {
+      return { success: false, errorCode: 'expired', error: 'That code has expired. Please request a new code.' };
+    }
+
+    const attemptCount = Number(data.attemptCount || 0);
+    if (attemptCount >= maxAttempts) {
+      return { success: false, errorCode: 'locked', error: 'Too many attempts. Please request a new code.' };
+    }
+
+    const expectedHash = String(data.codeHash || '');
+    const salt = String(data.salt || '');
+    if (!expectedHash || !salt) {
+      return { success: false, errorCode: 'missing', error: 'Verification code not found. Please request a new code.' };
+    }
+
+    const candidateHash = hashVerificationCode(salt, code);
+    const match = safeEqualHex(expectedHash, candidateHash);
+
+    if (!match) {
+      await ref.set(
+        {
+          attemptCount: admin.firestore.FieldValue.increment(1),
+          lastAttemptAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      return { success: false, errorCode: 'invalid', error: 'Invalid code. Please try again.' };
+    }
+
+    // Mark the Firebase Auth user as verified.
+    await admin.auth().updateUser(uid, { emailVerified: true });
+
+    // Delete the code doc so it can't be reused.
+    try {
+      await ref.delete();
+    } catch (_) {
+      // Non-fatal.
+    }
+
+    return { success: true };
+  }
+);
+
 exports.sendQueuedEmailOnCreate = onDocumentCreated(
   {
     document: 'mail/{mailId}',
@@ -1169,5 +1443,232 @@ exports.notifySchedulingAdminsOnAppointmentCoverageUpdate = onDocumentUpdated(
     );
 
     return null;
+  }
+);
+
+// ---------------------------------------------------------------------------
+// Fygaro Payment HTTP Function
+// Handles: POST /initialize, GET /verify/:id, POST /webhook, POST /sync
+// ---------------------------------------------------------------------------
+const { onRequest } = require('firebase-functions/v2/https');
+
+exports.payments = onRequest(
+  {
+    secrets: [FYGARO_API_KEY_SECRET, FYGARO_API_SECRET_SECRET],
+    cors: true,
+    region: 'us-central1',
+  },
+  async (req, res) => {
+    const urlPath = (req.path || '/').replace(/^\/+/, '');
+    const segments = urlPath.split('/').filter(Boolean);
+    const segment0 = segments[0] || '';
+    const segment1 = segments[1] || '';
+
+    const fygaroApiKey = FYGARO_API_KEY_SECRET.value();
+    const fygaroApiSecret = FYGARO_API_SECRET_SECRET.value();
+    const fygaroButtonUrl = FYGARO_BUTTON_URL_PARAM.value();
+    const webhookUpdatesEnabled = process.env.ENABLE_FYGARO_WEBHOOK_UPDATES === 'true';
+    const syncEnabled = process.env.ENABLE_FYGARO_SYNC === 'true';
+
+    function buildFygaroPaymentUrl({ amount, currency, customReference, expirySeconds = 1800 }) {
+      function b64url(obj) {
+        return Buffer.from(typeof obj === 'string' ? obj : JSON.stringify(obj))
+          .toString('base64')
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '');
+      }
+      const now = Math.floor(Date.now() / 1000);
+      const header = b64url({ alg: 'HS256', typ: 'JWT', kid: fygaroApiKey });
+      const payload = b64url({
+        amount: parseFloat(parseFloat(amount).toFixed(2)),
+        currency,
+        custom_reference: customReference,
+        exp: String(now + expirySeconds),
+        nbf: String(now),
+      });
+      const sigInput = `${header}.${payload}`;
+      const signature = crypto
+        .createHmac('sha256', fygaroApiSecret)
+        .update(sigInput)
+        .digest('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+      const jwt = `${sigInput}.${signature}`;
+      const base = fygaroButtonUrl.replace(/\/$/, '');
+      return `${base}/?jwt=${jwt}`;
+    }
+
+    async function applyCompletedPayment({
+      invoiceId, invoiceFirestoreId, appointmentId, transactionId, webhookData,
+    }) {
+      const db = admin.firestore();
+      const paidAtIso = webhookData?.paid_at
+        ? new Date(webhookData.paid_at).toISOString()
+        : new Date().toISOString();
+      const amountPaid = Number(webhookData?.amount ?? webhookData?.amount_paid ?? 0) || 0;
+      const pmtCurrency = webhookData?.currency || 'JMD';
+      const paymentMethod = webhookData?.payment_method || 'Fygaro';
+      const updates = {
+        status: 'Paid',
+        paymentStatus: 'paid',
+        paidDate: paidAtIso,
+        paymentMethod,
+        paymentProvider: 'Fygaro',
+        paymentTransactionId: transactionId || webhookData?.transactionId,
+        amountPaid,
+        currency: pmtCurrency,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      };
+      const invoicesRef = db.collection('invoices');
+      const refsToUpdate = [];
+
+      if (invoiceFirestoreId) {
+        const snap = await invoicesRef.doc(String(invoiceFirestoreId)).get();
+        if (snap.exists) refsToUpdate.push(snap.ref);
+      }
+      if (invoiceId) {
+        const directSnap = await invoicesRef.doc(String(invoiceId)).get();
+        if (directSnap.exists) {
+          refsToUpdate.push(directSnap.ref);
+        } else {
+          const q = await invoicesRef.where('invoiceId', '==', invoiceId).get();
+          q.forEach((d) => refsToUpdate.push(d.ref));
+        }
+      }
+      if (refsToUpdate.length === 0 && appointmentId) {
+        const q1 = await invoicesRef.where('appointmentId', '==', appointmentId).get();
+        q1.forEach((d) => refsToUpdate.push(d.ref));
+        const q2 = await invoicesRef.where('relatedAppointmentId', '==', appointmentId).get();
+        q2.forEach((d) => refsToUpdate.push(d.ref));
+      }
+
+      const uniquePaths = [...new Set(refsToUpdate.map((r) => r.path))];
+      const uniqueRefs = uniquePaths.map((p) => db.doc(p));
+      if (uniqueRefs.length > 0) {
+        const batch = db.batch();
+        uniqueRefs.forEach((r) => batch.update(r, updates));
+        await batch.commit();
+      }
+
+      if (appointmentId) {
+        const apptRef = db.collection('appointments').doc(String(appointmentId));
+        const apptSnap = await apptRef.get();
+        if (apptSnap.exists) {
+          await apptRef.update({
+            invoiceStatus: 'Paid',
+            paidDate: paidAtIso,
+            paymentMethod,
+            paymentProvider: 'Fygaro',
+            paymentTransactionId: transactionId || webhookData?.transactionId,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      }
+      return { updatedInvoices: uniqueRefs.length };
+    }
+
+    // ---- POST /initialize ----
+    if (req.method === 'POST' && segment0 === 'initialize') {
+      try {
+        const { amount, currency = 'JMD', invoiceId, invoiceFirestoreId, appointmentId, customerId } = req.body || {};
+        if (!amount) return res.status(400).json({ success: false, error: 'amount is required' });
+        if (!fygaroApiKey || !fygaroApiSecret) {
+          return res.status(500).json({ success: false, error: 'Payment service not configured.' });
+        }
+        const primaryId = (invoiceFirestoreId || invoiceId || appointmentId || customerId || 'unknown')
+          .toString().replace(/[^a-zA-Z0-9_-]/g, '-');
+        const customReference = `876n-${primaryId}`.substring(0, 40);
+        const paymentUrl = buildFygaroPaymentUrl({ amount, currency, customReference });
+        return res.json({
+          success: true,
+          paymentUrl,
+          transactionId: customReference,
+          customReference,
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        });
+      } catch (err) {
+        console.error('Payment initialize error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    }
+
+    // ---- GET /verify/:transactionId ----
+    if (req.method === 'GET' && segment0 === 'verify' && segment1) {
+      const fygaroReference = req.query.fygaroReference || segment1;
+      return res.json({
+        success: true,
+        status: 'completed',
+        transactionId: fygaroReference,
+        customReference: segment1,
+      });
+    }
+
+    // ---- POST /webhook ----
+    if (req.method === 'POST' && segment0 === 'webhook') {
+      if (!webhookUpdatesEnabled) {
+        return res.json({ success: true, received: true, ignored: true });
+      }
+      try {
+        const webhookData = req.body || {};
+        const { event, transaction_id, status, metadata } = webhookData;
+        const eventStr = String(event || '').toLowerCase();
+        const statusStr = String(status || '').toLowerCase();
+        const isComplete =
+          ['payment.completed', 'payment.success', 'payment.succeeded', 'payment.paid'].includes(eventStr) ||
+          ['completed', 'success', 'paid'].includes(statusStr);
+        if (isComplete) {
+          await applyCompletedPayment({
+            invoiceId: metadata?.invoiceId,
+            invoiceFirestoreId: metadata?.invoiceFirestoreId,
+            appointmentId: metadata?.appointmentId,
+            transactionId: transaction_id || webhookData?.transactionId,
+            webhookData,
+          });
+        }
+        return res.json({ success: true, received: true });
+      } catch (err) {
+        console.error('Webhook error:', err);
+        return res.json({ success: false, error: err.message });
+      }
+    }
+
+    // ---- POST /sync ----
+    if (req.method === 'POST' && segment0 === 'sync') {
+      if (!syncEnabled) {
+        return res.status(403).json({ success: false, error: 'Payment sync is disabled' });
+      }
+      try {
+        const { transactionId, customReference, invoiceId, invoiceFirestoreId, appointmentId, amount, currency } = req.body || {};
+        if (!transactionId) return res.status(400).json({ success: false, error: 'transactionId is required' });
+        let resolvedInvoiceFirestoreId = invoiceFirestoreId;
+        let resolvedInvoiceId = invoiceId;
+        if (!resolvedInvoiceId && !resolvedInvoiceFirestoreId && !appointmentId && customReference) {
+          const primaryId = customReference.startsWith('876n-') ? customReference.substring(5) : customReference;
+          resolvedInvoiceFirestoreId = primaryId;
+          resolvedInvoiceId = primaryId;
+        }
+        const result = await applyCompletedPayment({
+          invoiceId: resolvedInvoiceId,
+          invoiceFirestoreId: resolvedInvoiceFirestoreId,
+          appointmentId: appointmentId,
+          transactionId,
+          webhookData: {
+            transactionId,
+            amount: amount ? parseFloat(amount) : undefined,
+            currency: currency || 'JMD',
+            paid_at: new Date().toISOString(),
+            payment_method: 'Fygaro',
+          },
+        });
+        return res.json({ success: true, status: 'completed', transactionId, applied: result });
+      } catch (err) {
+        console.error('Payment sync error:', err);
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    }
+
+    return res.status(404).json({ success: false, error: 'Not found' });
   }
 );

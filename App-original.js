@@ -509,15 +509,42 @@ function AppNavigator() {
 }
 
 export default function App() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     Poppins_400Regular,
     Poppins_500Medium,
     Poppins_600SemiBold,
     Poppins_700Bold,
   });
 
-  if (!fontsLoaded) {
-    return null;
+  const [fontStartupTimedOut, setFontStartupTimedOut] = useState(false);
+
+  useEffect(() => {
+    if (fontsLoaded || fontError) {
+      setFontStartupTimedOut(false);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      setFontStartupTimedOut(true);
+    }, 4000);
+
+    return () => clearTimeout(timeout);
+  }, [fontsLoaded, fontError]);
+
+  if (!fontsLoaded && !fontError && !fontStartupTimedOut) {
+    return (
+      <View
+        style={{
+          flex: 1,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: COLORS.background,
+        }}
+      >
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={{ marginTop: 16, color: COLORS.textLight, fontSize: 15 }}>Loading app...</Text>
+      </View>
+    );
   }
 
   return (
