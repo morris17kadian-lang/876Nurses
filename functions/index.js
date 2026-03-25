@@ -1464,8 +1464,8 @@ exports.payments = onRequest(
     const segment0 = segments[0] || '';
     const segment1 = segments[1] || '';
 
-    const fygaroApiKey = FYGARO_API_KEY_SECRET.value();
-    const fygaroApiSecret = FYGARO_API_SECRET_SECRET.value();
+    const fygaroApiKey = FYGARO_API_KEY_SECRET.value().trim();
+    const fygaroApiSecret = FYGARO_API_SECRET_SECRET.value().trim();
     const fygaroButtonUrl = FYGARO_BUTTON_URL_PARAM.value();
     const webhookUpdatesEnabled = process.env.ENABLE_FYGARO_WEBHOOK_UPDATES === 'true';
     const syncEnabled = process.env.ENABLE_FYGARO_SYNC === 'true';
