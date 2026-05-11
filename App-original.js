@@ -26,6 +26,7 @@ import { ProfileEditProvider } from './context/ProfileEditContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppOnboarding, { checkOnboardingStatusForUser } from './components/AppOnboarding';
 import SplashScreen from './screens/SplashScreen';
+import PublicWelcomeScreen from './screens/PublicWelcomeScreen';
 import HomeScreen from './screens/HomeScreen';
 import AppointmentsScreen from './screens/AppointmentsScreen';
 import BookScreen from './screens/BookScreen';
@@ -414,9 +415,26 @@ function AdminDashboardNavigator() {
   );
 }
 
+function PublicNavigator() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="PublicWelcome" component={PublicWelcomeScreen} />
+      <Stack.Screen name="PublicAuth">
+        {() => <SplashScreen onFinish={() => {}} />}
+      </Stack.Screen>
+      <Stack.Screen name="Help" component={HelpScreen} />
+      <Stack.Screen name="About" component={AboutScreen} />
+      <Stack.Screen name="UserManual" component={UserManualScreen} />
+      <Stack.Screen name="Terms" component={TermsScreen} />
+      <Stack.Screen name="Privacy" component={PrivacyPolicyScreen} />
+      <Stack.Screen name="ContactSupport" component={ContactSupportScreen} />
+    </Stack.Navigator>
+  );
+}
+
 function AppNavigator() {
   const { user, isLoading } = useAuth();
-  const [showSplash, setShowSplash] = useState(true);
+  const [showSplash, setShowSplash] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const previousUserRef = useRef(user);
 
@@ -429,8 +447,7 @@ function AppNavigator() {
           setShowSplash(true);
           // Clear the flag after reading
           await AsyncStorage.removeItem('shouldShowSplash');
-        } else if (user) {
-          // If user is already logged in and no splash flag, skip splash
+        } else {
           setShowSplash(false);
         }
       } catch (error) {
@@ -445,8 +462,8 @@ function AppNavigator() {
     // Detect logout and show splash screen
     const previousUser = previousUserRef.current;
     if (previousUser && !user && !isLoading) {
-      // User just logged out - show splash screen
-      setShowSplash(true);
+      // Logged-out users now fall back to the public access flow.
+      setShowSplash(false);
     }
     previousUserRef.current = user;
   }, [user, isLoading]);
@@ -467,14 +484,17 @@ function AppNavigator() {
   }, [user, isLoading, showSplash]);
 
   if (showSplash) {
-    // Keep the styled SplashScreen when logged out; only dismiss when authenticated
     const handleSplashFinish = () => {
       if (user) {
         setShowSplash(false);
       }
-      // If no user, remain on SplashScreen which contains the auth forms
     };
-    return <SplashScreen onFinish={handleSplashFinish} />;
+    return (
+      <SplashScreen
+        onFinish={handleSplashFinish}
+        onContinueAsGuest={() => setShowSplash(false)}
+      />
+    );
   }
 
   if (isLoading) {
@@ -502,7 +522,7 @@ function AppNavigator() {
           isAdmin ? <AdminDashboardNavigator /> : 
           isNurse ? <NurseNavigator /> : 
           <MainTabs />
-        ) : <SplashScreen onFinish={() => {}} />}
+        ) : <PublicNavigator />}
       </NavigationContainer>
     </>
   );

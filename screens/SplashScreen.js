@@ -29,7 +29,7 @@ import LegalModal from '../components/LegalModal';
 // import { seedDefaultChatUsers } from '../utils/chatSeedData';
 
 
-export default function SplashScreen({ onFinish }) {
+export default function SplashScreen({ onFinish, onContinueAsGuest }) {
   // Get screen dimensions
   const { width, height } = useWindowDimensions();
   
@@ -1108,6 +1108,16 @@ export default function SplashScreen({ onFinish }) {
               </Text>
             </TouchableWeb>
           </View>
+
+          {typeof onContinueAsGuest === 'function' && (
+            <TouchableWeb
+              style={styles.guestAccessButton}
+              onPress={onContinueAsGuest}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.guestAccessButtonText}>Continue Without an Account</Text>
+            </TouchableWeb>
+          )}
                 </View>
               </ScrollView>
             </View>
@@ -1764,6 +1774,21 @@ const styles = StyleSheet.create({
     color: '#4A90E2',
     fontSize: 14,
     fontWeight: '500',
+  },
+  guestAccessButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(74, 144, 226, 0.28)',
+    backgroundColor: 'rgba(74, 144, 226, 0.06)',
+  },
+  guestAccessButtonText: {
+    color: '#2C6DB8',
+    fontSize: 14,
+    fontWeight: '600',
   },
   verifyCodeButtonRow: {
     flexDirection: 'row',
