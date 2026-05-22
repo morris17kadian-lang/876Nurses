@@ -77,6 +77,10 @@ export default function PublicWelcomeScreen({ navigation }) {
               <Text style={styles.secondaryButtonText}>Call Us</Text>
             </TouchableWeb>
           </View>
+
+          <TouchableWeb onPress={() => {}} activeOpacity={0.7} style={styles.guestLinkWrap}>
+            <Text style={styles.guestLinkText}>Continue as guest</Text>
+          </TouchableWeb>
         </LinearGradient>
 
         <View style={styles.section}>
@@ -222,6 +226,16 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     fontSize: 14,
     fontFamily: 'Poppins_600SemiBold',
+  },
+  guestLinkWrap: {
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  guestLinkText: {
+    color: 'rgba(255,255,255,0.65)',
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    textDecorationLine: 'underline',
   },
   section: {
     gap: 12,
