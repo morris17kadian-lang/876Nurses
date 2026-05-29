@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
 import { useNotifications } from './NotificationContext';
@@ -25,8 +25,10 @@ export const AppointmentProvider = ({ children }) => {
   const [appointments, setAppointments] = useState([]);
   const [nurses, setNurses] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [refreshInProgress, setRefreshInProgress] = useState(false); // Prevent concurrent refreshes
+  const refreshInProgressRef = useRef(false); // Prevent concurrent refreshes (ref avoids unstable dep)
   const [lastRefreshTime, setLastRefreshTime] = useState(0); // Track last refresh time
+  const appointmentsRef = useRef(appointments);
+  useEffect(() => { appointmentsRef.current = appointments; }, [appointments]);
 
   const getAppointmentsStorageKey = () => `@876_appointments_${user?.id || 'guest'}`;
   const getNursesStorageKey = () => `@876_nurses_${user?.id || 'guest'}`;
@@ -133,21 +135,21 @@ export const AppointmentProvider = ({ children }) => {
   }, [appointments]);
 
   // Refresh appointments from API
-  const refreshAppointments = async () => {
+  const refreshAppointments = useCallback(async () => {
     if (!user) {
       setAppointments([]);
       return;
     }
     
     // Prevent concurrent refresh calls
-    if (refreshInProgress) {
+    if (refreshInProgressRef.current) {
       // Refresh already in progress
       return;
     }
     
     try {
       // Refreshing appointments from backend
-      setRefreshInProgress(true);
+      refreshInProgressRef.current = true;
       setIsLoading(true);
 
       // Primary source: backend endpoint.
@@ -169,7 +171,7 @@ export const AppointmentProvider = ({ children }) => {
       }
 
       if (Array.isArray(rawAppointments) && rawAppointments.length > 0) {
-        const cachedAppointments = Array.isArray(appointments) ? appointments : [];
+        const cachedAppointments = Array.isArray(appointmentsRef.current) ? appointmentsRef.current : [];
 
         // If a nurse saved notes locally (older builds) but they never reached Firestore,
         // we backfill them here so admins (and other devices) can see them.
@@ -370,9 +372,9 @@ export const AppointmentProvider = ({ children }) => {
       await saveAppointments([]);
     } finally {
       setIsLoading(false);
-      setRefreshInProgress(false); // Mark refresh as complete
+      refreshInProgressRef.current = false; // Mark refresh as complete
     }
-  };
+  }, [nurses, nursesFromContext, user, createAppointmentNotification, createSystemNotification, sendNotificationToUser, scheduleAppointmentReminder, incrementAssignedClients]);
 
   // Book new appointment (Patient action)
   // Map service names to valid serviceType enum values
@@ -1585,7 +1587,7 @@ export const AppointmentProvider = ({ children }) => {
     }
   }, [user?.id]); // Only trigger when user ID changes, not on every user object change
 
-  const value = {
+  const value = useMemo(() => ({
     appointments,
     nurses,
     isLoading,
@@ -1612,7 +1614,34 @@ export const AppointmentProvider = ({ children }) => {
     updateNurseNotes,
     getAppointmentStats,
     addCompletedAppointmentFromShift,
-  };
+  }), [
+    appointments,
+    nurses,
+    isLoading,
+    bookAppointment,
+    assignNurse,
+    acceptAppointment,
+    declineAppointment,
+    clockInAppointment,
+    completeAppointment,
+    cancelAppointment,
+    clearCompletedAppointments,
+    clearAllAppointments,
+    refreshAppointments,
+    getAppointmentsByRole,
+    getAppointmentsByStatus,
+    getAppointmentsByNurse,
+    getPatientAppointments,
+    getUpcomingAppointments,
+    getAppointmentHistory,
+    getAvailableNurses,
+    updateNurseStatus,
+    updateNurseAvailability,
+    updateAppointmentNotes,
+    updateNurseNotes,
+    getAppointmentStats,
+    addCompletedAppointmentFromShift,
+  ]);
 
   return (
     <AppointmentContext.Provider value={value}>

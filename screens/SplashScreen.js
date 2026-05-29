@@ -1113,9 +1113,9 @@ export default function SplashScreen({ onFinish, onContinueAsGuest }) {
             <TouchableWeb
               style={styles.guestAccessButton}
               onPress={onContinueAsGuest}
-              activeOpacity={0.8}
+              activeOpacity={0.7}
             >
-              <Text style={styles.guestAccessButtonText}>Continue Without an Account</Text>
+              <Text style={styles.guestAccessButtonText}>Continue as guest</Text>
             </TouchableWeb>
           )}
                 </View>
@@ -1778,17 +1778,15 @@ const styles = StyleSheet.create({
   guestAccessButton: {
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 16,
-    paddingVertical: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(74, 144, 226, 0.28)',
-    backgroundColor: 'rgba(74, 144, 226, 0.06)',
+    marginTop: 14,
+    paddingVertical: 6,
+    alignSelf: 'center',
   },
   guestAccessButtonText: {
-    color: '#2C6DB8',
-    fontSize: 14,
-    fontWeight: '600',
+    color: 'rgba(44, 109, 184, 0.88)',
+    fontSize: 13,
+    fontWeight: '500',
+    textDecorationLine: 'underline',
   },
   verifyCodeButtonRow: {
     flexDirection: 'row',

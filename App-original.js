@@ -26,7 +26,6 @@ import { ProfileEditProvider } from './context/ProfileEditContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppOnboarding, { checkOnboardingStatusForUser } from './components/AppOnboarding';
 import SplashScreen from './screens/SplashScreen';
-import PublicWelcomeScreen from './screens/PublicWelcomeScreen';
 import HomeScreen from './screens/HomeScreen';
 import AppointmentsScreen from './screens/AppointmentsScreen';
 import BookScreen from './screens/BookScreen';
@@ -415,12 +414,16 @@ function AdminDashboardNavigator() {
   );
 }
 
-function PublicNavigator() {
+function PublicNavigator({ onContinueAsGuest }) {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="PublicWelcome" component={PublicWelcomeScreen} />
       <Stack.Screen name="PublicAuth">
-        {() => <SplashScreen onFinish={() => {}} />}
+        {() => (
+          <SplashScreen
+            onFinish={() => {}}
+            onContinueAsGuest={onContinueAsGuest}
+          />
+        )}
       </Stack.Screen>
       <Stack.Screen name="Help" component={HelpScreen} />
       <Stack.Screen name="About" component={AboutScreen} />
@@ -434,9 +437,11 @@ function PublicNavigator() {
 
 function AppNavigator() {
   const { user, isLoading } = useAuth();
-  const [showSplash, setShowSplash] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
+  const [isGuestMode, setIsGuestMode] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const previousUserRef = useRef(user);
+  const previousIsLoadingRef = useRef(isLoading);
 
   useEffect(() => {
     // Check if we should show splash screen on app load or after logout
@@ -448,7 +453,7 @@ function AppNavigator() {
           // Clear the flag after reading
           await AsyncStorage.removeItem('shouldShowSplash');
         } else {
-          setShowSplash(false);
+          setShowSplash(!user);
         }
       } catch (error) {
         console.log('Error checking splash state:', error);
@@ -459,13 +464,21 @@ function AppNavigator() {
   }, [user]);
 
   useEffect(() => {
-    // Detect logout and show splash screen
+    // Detect logout after auth loading settles and return to the auth screen.
     const previousUser = previousUserRef.current;
-    if (previousUser && !user && !isLoading) {
-      // Logged-out users now fall back to the public access flow.
-      setShowSplash(false);
+    const previousIsLoading = previousIsLoadingRef.current;
+
+    if (previousUser && !user && previousIsLoading && !isLoading) {
+      setIsGuestMode(false);
+      setShowSplash(true);
     }
+
+    if (user) {
+      setIsGuestMode(false);
+    }
+
     previousUserRef.current = user;
+    previousIsLoadingRef.current = isLoading;
   }, [user, isLoading]);
 
   // Check onboarding status when user logs in
@@ -489,10 +502,16 @@ function AppNavigator() {
         setShowSplash(false);
       }
     };
+
+    const handleContinueAsGuest = () => {
+      setIsGuestMode(true);
+      setShowSplash(false);
+    };
+
     return (
       <SplashScreen
         onFinish={handleSplashFinish}
-        onContinueAsGuest={() => setShowSplash(false)}
+        onContinueAsGuest={handleContinueAsGuest}
       />
     );
   }
@@ -522,7 +541,16 @@ function AppNavigator() {
           isAdmin ? <AdminDashboardNavigator /> : 
           isNurse ? <NurseNavigator /> : 
           <MainTabs />
-        ) : <PublicNavigator />}
+        ) : isGuestMode ? (
+          <MainTabs />
+        ) : (
+          <PublicNavigator
+            onContinueAsGuest={() => {
+              setIsGuestMode(true);
+              setShowSplash(false);
+            }}
+          />
+        )}
       </NavigationContainer>
     </>
   );

@@ -16,7 +16,7 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.876nurses.home",
       "buildNumber": "1",
       "infoPlist": {
@@ -60,6 +60,9 @@
         "projectId": "9e3794a4-ec1e-48bc-9199-2e8ff5ab418d"
       }
     },
-    "owner": "kadian"
+    "owner": "kadian",
+    "plugins": [
+      "expo-font"
+    ]
   }
 }

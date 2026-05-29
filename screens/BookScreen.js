@@ -97,6 +97,7 @@ export default function BookScreen({ navigation, route }) {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const addressInputRef = useRef(null);
+  const userDetailsOverriddenRef = useRef(false);
 
   const NON_BOOKABLE_SERVICE_TITLES = useMemo(
     () =>
@@ -314,45 +315,71 @@ export default function BookScreen({ navigation, route }) {
     });
   }, [NON_BOOKABLE_SERVICE_TITLES]);
 
-  // Autofill form data from user profile
-  useEffect(() => {
-    if (user) {
-      // Build name from available fields
-      const name = user.fullName || 
-                   (user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : '') ||
-                   user.name || 
-                   user.username || '';
-      
-      // Handle address - could be object or string
-      const address = typeof user.address === 'object' && user.address?.street 
-        ? user.address.street 
-        : (typeof user.address === 'string' ? user.address : '');
-      
-      setFormData(prev => ({
-        ...prev,
-        name: name,
-        email: user.email || '',
-        phone: user.phone || '',
-        address: address,
-      }));
-    }
-  }, [user]);
+  const resolveUserName = (u) => {
+    if (!u) return '';
+    const fromParts = u.firstName && u.lastName ? `${u.firstName} ${u.lastName}` : '';
+    return u.fullName || fromParts || u.name || u.username || '';
+  };
 
-  // Sync user details when they change (email, phone, address)
+  const resolveUserAddressText = (u) => {
+    const addressValue = u?.address;
+    return typeof addressValue === 'object' && addressValue?.street
+      ? addressValue.street
+      : (typeof addressValue === 'string' ? addressValue : '');
+  };
+
+  // Autofill/sync contact info from the logged-in user's profile.
+  // IMPORTANT: don't overwrite the form while the user is actively editing.
   useEffect(() => {
-    if (!isEditingUserDetails && user) {
-      const address = typeof user.address === 'object' && user.address?.street 
-        ? user.address.street 
-        : (typeof user.address === 'string' ? user.address : '');
-      
-      setFormData(prev => ({
-        ...prev,
-        email: user.email || '',
-        phone: user.phone || '',
-        address: address,
-      }));
+    if (!user || isEditingUserDetails) return;
+    if (userDetailsOverriddenRef.current) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      name: resolveUserName(user),
+      email: user.email || '',
+      phone: user.phone || '',
+      address: resolveUserAddressText(user),
+    }));
+  }, [user, isEditingUserDetails]);
+
+  const handleToggleEditOrSaveUserDetails = () => {
+    if (!isEditingUserDetails) {
+      setIsEditingUserDetails(true);
+      return;
     }
-  }, [user?.email, user?.phone, user?.address, isEditingUserDetails]);
+
+    const name = String(formData?.name || '').trim();
+    const email = String(formData?.email || '').trim();
+    const phone = String(formData?.phone || '').trim();
+    const address = String(formData?.address || '').trim();
+
+    if (!name) {
+      Alert.alert('Missing Information', 'Please enter your full name.');
+      return;
+    }
+
+    if (!phone) {
+      Alert.alert('Missing Information', 'Please enter your phone number.');
+      return;
+    }
+
+    if (!address) {
+      Alert.alert('Missing Information', 'Please enter your service address.');
+      return;
+    }
+
+    // This is booking-only. Keep trimmed values locally and lock the fields.
+    setFormData((prev) => ({
+      ...prev,
+      name,
+      email,
+      phone,
+      address,
+    }));
+
+    setIsEditingUserDetails(false);
+  };
 
   // Load admin-configured deposit defaults
   useEffect(() => {
@@ -483,6 +510,7 @@ export default function BookScreen({ navigation, route }) {
   ];
 
   const handleAddressChange = (text) => {
+    userDetailsOverriddenRef.current = true;
     setFormData((prev) => ({ ...prev, address: text }));
     if (text.length >= 2) {
       const suggestions = getAddressSuggestions(text);
@@ -495,6 +523,7 @@ export default function BookScreen({ navigation, route }) {
   };
 
   const selectAddress = (address) => {
+    userDetailsOverriddenRef.current = true;
     setFormData((prev) => ({ ...prev, address }));
     setShowSuggestions(false);
     setAddressSuggestions([]);
@@ -1292,11 +1321,17 @@ export default function BookScreen({ navigation, route }) {
   };
 
   const resetForm = () => {
+    userDetailsOverriddenRef.current = false;
+    setIsEditingUserDetails(false);
+
+    const resolvedName = user ? resolveUserName(user) : '';
+    const resolvedAddress = user ? resolveUserAddressText(user) : '';
+
     setFormData({
-      name: '',
-      email: '',
-      phone: '',
-      address: '',
+      name: resolvedName,
+      email: user?.email || '',
+      phone: user?.phone || '',
+      address: resolvedAddress,
       services: [],
       startDate: '',
       startTime: '',
@@ -1496,7 +1531,7 @@ export default function BookScreen({ navigation, route }) {
 
               <TouchableWeb
                 style={styles.pillButton}
-                onPress={() => setIsEditingUserDetails(!isEditingUserDetails)}
+                onPress={handleToggleEditOrSaveUserDetails}
                 activeOpacity={0.7}
               >
                 <LinearGradient
@@ -1530,7 +1565,10 @@ export default function BookScreen({ navigation, route }) {
                 placeholder="Enter your full name"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.name}
-                onChangeText={(text) => setFormData((prev) => ({ ...prev, name: text }))}
+                onChangeText={(text) => {
+                  userDetailsOverriddenRef.current = true;
+                  setFormData((prev) => ({ ...prev, name: text }));
+                }}
                 editable={isEditingUserDetails}
               />
               <MaterialCommunityIcons 
@@ -1551,7 +1589,10 @@ export default function BookScreen({ navigation, route }) {
                 placeholder="your.email@example.com"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.email}
-                onChangeText={(text) => setFormData((prev) => ({ ...prev, email: text }))}
+                onChangeText={(text) => {
+                  userDetailsOverriddenRef.current = true;
+                  setFormData((prev) => ({ ...prev, email: text }));
+                }}
                 editable={isEditingUserDetails}
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -1576,7 +1617,10 @@ export default function BookScreen({ navigation, route }) {
                 placeholder="876-XXX-XXXX"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.phone}
-                onChangeText={(text) => setFormData((prev) => ({ ...prev, phone: text }))}
+                onChangeText={(text) => {
+                  userDetailsOverriddenRef.current = true;
+                  setFormData((prev) => ({ ...prev, phone: text }));
+                }}
                 editable={isEditingUserDetails}
                 keyboardType="phone-pad"
               />
