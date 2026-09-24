@@ -1122,6 +1122,15 @@ export default function BookScreen({ navigation, route }) {
   };
 
   const handleDepositPayment = async () => {
+    // Safety net: if a deposit isn't actually required (setting disabled, percent is
+    // 0, or the computed deposit amount is 0 due to a stale/loading policy), never
+    // call the payment gateway with a missing amount. Just complete the booking.
+    if (!depositRequiredSetting || depositPercentSetting <= 0 || !depositAmount || depositAmount <= 0) {
+      setShowDepositModal(false);
+      await bookAppointmentWithoutPayment();
+      return;
+    }
+
     setProcessingPayment(true);
     
     try {
