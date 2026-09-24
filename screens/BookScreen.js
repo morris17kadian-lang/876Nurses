@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { Timestamp } from 'firebase/firestore';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -381,31 +382,39 @@ export default function BookScreen({ navigation, route }) {
     setIsEditingUserDetails(false);
   };
 
-  // Load admin-configured deposit defaults
-  useEffect(() => {
-    let isMounted = true;
-    const loadDepositPolicy = async () => {
-      try {
-        const raw = await AsyncStorage.getItem('adminPaymentGeneralSettings');
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
+  // Load admin-configured deposit defaults.
+  // Re-fetch on every focus (not just on mount) since "Book" is a bottom-tab
+  // screen that stays mounted, so it wouldn't otherwise pick up changes saved
+  // from the Payment Settings screen without a full app reload.
+  useFocusEffect(
+    React.useCallback(() => {
+      let isMounted = true;
+      const loadDepositPolicy = async () => {
+        try {
+          const raw = await AsyncStorage.getItem('adminPaymentGeneralSettings');
+          if (!raw) {
+            // No settings saved yet; keep defaults.
+            return;
+          }
+          const parsed = JSON.parse(raw);
 
-        if (typeof parsed?.depositRequired === 'boolean' && isMounted) {
-          setDepositRequiredSetting(parsed.depositRequired);
+          if (typeof parsed?.depositRequired === 'boolean' && isMounted) {
+            setDepositRequiredSetting(parsed.depositRequired);
+          }
+          if (Number.isFinite(parsed?.depositPercent) && isMounted) {
+            const pct = Math.max(0, Math.min(100, Number(parsed.depositPercent)));
+            setDepositPercentSetting(pct);
+          }
+        } catch (error) {
+          console.error('Error loading deposit settings:', error);
         }
-        if (Number.isFinite(parsed?.depositPercent) && isMounted) {
-          const pct = Math.max(0, Math.min(100, Number(parsed.depositPercent)));
-          setDepositPercentSetting(pct);
-        }
-      } catch (error) {
-        console.error('Error loading deposit settings:', error);
-      }
-    };
-    loadDepositPolicy();
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+      };
+      loadDepositPolicy();
+      return () => {
+        isMounted = false;
+      };
+    }, [])
+  );
 
   // Calculate total amount whenever services change
   useEffect(() => {

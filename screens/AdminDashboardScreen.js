@@ -856,13 +856,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
   }, [nurses]);
 
   useEffect(() => {
-    // Reset initialization flag when user changes so the sequences reinitialize
     const initializeSequences = async () => {
-      if (sequencesInitialized) {
-        // Sequences already initialized
-        return;
-      }
-      
       // Starting sequence initialization
       try {
         // Get or initialize persistent sequence counters
@@ -880,15 +874,15 @@ export default function AdminDashboardScreen({ navigation, route }) {
           try {
             // Use the proper staff endpoints
             const adminResp = await ApiService.getAdmins({ limit: 1000 });
-            if (adminResp && adminResp.success && Array.isArray(adminResp.users)) {
-              backendAdmins = adminResp.users;
+            if (Array.isArray(adminResp)) {
+              backendAdmins = adminResp;
             }
           } catch (e) {
             // Could not fetch admin users
           }
           try {
             const nurseResp = await ApiService.getNurses({ limit: 1000 });
-            if (nurseResp && nurseResp.success && Array.isArray(nurseResp.users)) backendNurses = nurseResp.users;
+            if (Array.isArray(nurseResp)) backendNurses = nurseResp;
           } catch (e) {
             // Could not fetch nurse users
           }
@@ -988,7 +982,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
     };
     
     initializeSequences();
-  }, [user]);
+  }, [user?.id]);
   
   // Reinitialize sequences whenever the user changes (e.g., admin login)
   useEffect(() => {
