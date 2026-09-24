@@ -37,6 +37,7 @@
       "package": "com.nurses876.home",
       "versionCode": 1,
       "permissions": [
+        "RECEIVE_BOOT_COMPLETED",
         "RECEIVE_BOOT_COMPLETED"
       ]
     },
@@ -57,12 +58,18 @@
     },
     "extra": {
       "eas": {
-        "projectId": "a3ae5451-ecf4-4962-8555-e47b6e322911"
+        "projectId": "9e3794a4-ec1e-48bc-9199-2e8ff5ab418d"
       }
     },
-    "owner": "nurses876app-organization",
+    "owner": "kadian",
     "plugins": [
       "expo-font"
-    ]
+    ],
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/9e3794a4-ec1e-48bc-9199-2e8ff5ab418d"
+    }
   }
 }
