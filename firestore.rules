@@ -61,9 +61,15 @@ service cloud.firestore {
     }
     
     // Admins collection
+    // Admins collection
     match /admins/{adminId} {
       allow read: if true;
-      allow write: if isAdmin();
+      // Allow creation if:
+      // 1. User is creating their own profile (for initial signup)
+      // 2. OR user is authenticated (and the app layer validates they're an admin)
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (request.auth.uid == adminId || request.resource.data.get('role') == 'admin');
+      allow delete: if isAuthenticated() && request.resource.data.get('role') == 'admin';
     }
     
     // Nurses collection

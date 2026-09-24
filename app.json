@@ -17,7 +17,7 @@
     ],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.876nurses.home",
+      "bundleIdentifier": "com.nurses876.home",
       "buildNumber": "1",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
@@ -57,10 +57,10 @@
     },
     "extra": {
       "eas": {
-        "projectId": "9e3794a4-ec1e-48bc-9199-2e8ff5ab418d"
+        "projectId": "a3ae5451-ecf4-4962-8555-e47b6e322911"
       }
     },
-    "owner": "kadian",
+    "owner": "nurses876app-organization",
     "plugins": [
       "expo-font"
     ]

@@ -571,10 +571,17 @@ export default function BookScreen({ navigation, route }) {
       return;
     }
 
-    // For non-recurring appointments, show deposit payment modal
+    // For non-recurring appointments, check if deposit is required
     if (!isRecurring) {
-      setShowDepositModal(true);
-      return;
+      // If deposit is required, show the deposit payment modal
+      if (depositRequiredSetting && depositPercentSetting > 0) {
+        setShowDepositModal(true);
+        return;
+      } else {
+        // If no deposit required, book without payment
+        await bookAppointmentWithoutPayment();
+        return;
+      }
     }
 
     // For recurring appointments, process directly (existing flow)

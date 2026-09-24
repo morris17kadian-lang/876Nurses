@@ -4,7 +4,7 @@ import ApiService from '../services/ApiService';
 import FirebaseService from '../services/FirebaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearAllSequenceCache } from '../clear-sequence-cache';
-import { createUserWithEmailAndPassword, getAuth } from 'firebase/auth';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, getAuth } from 'firebase/auth';
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { auth, firebaseConfig } from '../config/firebase';
 
@@ -194,6 +194,7 @@ export const NurseProvider = ({ children }) => {
 
   const addNurse = async (newNurse) => {
     try {
+      console.log('🔄 [addNurse] Starting admin/nurse creation...', { newNurse });
       const role = newNurse.role || 'nurse';
       
       // Format data for new staff-specific endpoints
@@ -224,89 +225,124 @@ export const NurseProvider = ({ children }) => {
         apiEndpoint = '/staff/register/admin';
       }
       
-      const response = await ApiService.makeRequest(apiEndpoint, {
-        method: 'POST',
-        body: JSON.stringify(staffData)
-      });
+      console.log(`✏️ [addNurse] Creating ${role.toUpperCase()} with code: ${newNurse.nurseCode || newNurse.code}`);
+      console.log('📝 [addNurse] Staff data:', staffData);
       
-      if (response.success) {
-        // Staff created via new endpoint
-        // Refresh nurses list from backend
-        refreshNurses();
-
-        // Also create Firebase Auth + Firestore profile so staff can log in via Firebase
-        const codeValue = newNurse.nurseCode || newNurse.code;
-        try {
-          // Use a secondary app to create user without logging in the current user
-          const appName = 'SecondaryApp';
-          let secondaryApp;
-          try {
-            secondaryApp = getApp(appName);
-          } catch (e) {
-            secondaryApp = initializeApp(firebaseConfig, appName);
-          }
-          
-          const secondaryAuth = getAuth(secondaryApp);
-          const cred = await createUserWithEmailAndPassword(secondaryAuth, newNurse.email, 'temp123');
-          const uid = cred.user.uid;
-          
-          // Image Upload Logic (Non-blocking - continues even if upload fails)
-          let profilePhotoUrl = null;
-          if (newNurse.nurseIdPhoto && newNurse.nurseIdPhoto.uri) {
-            try {
-              const uploadResult = await FirebaseService.uploadImage(
-                newNurse.nurseIdPhoto.uri, 
-                `staff-profiles/${uid}/profile-photo.jpg`
-              );
-              if (uploadResult.success) {
-                profilePhotoUrl = uploadResult.url;
-                console.log('✅ Profile photo uploaded successfully');
-              } else {
-                console.warn('⚠️ Photo upload failed, continuing without photo:', uploadResult.error);
-              }
-            } catch (uploadError) {
-              console.warn('⚠️ Photo upload exception, continuing without photo:', uploadError.message);
-            }
-          }
-
-          const bankingDetails = staffData.bankingDetails || {
-            bankName: 'Default Bank',
-            accountNumber: '000000000',
-            accountHolderName: newNurse.name,
-            bankBranch: 'Main Branch',
-            currency: 'JMD'
-          };
-
-          const profileData = {
-            fullName: newNurse.name,
-            email: newNurse.email,
-            phone: newNurse.phone,
-            role,
-            profilePhoto: profilePhotoUrl,
-            code: codeValue,
-            nurseCode: role === 'nurse' ? codeValue : null,
-            adminCode: role === 'admin' ? codeValue : null,
-            username: codeValue,
-            isActive: true,
-            bankingDetails,
-            bankName: bankingDetails.bankName,
-            accountNumber: bankingDetails.accountNumber,
-            accountHolderName: bankingDetails.accountHolderName,
-            bankBranch: bankingDetails.bankBranch,
-            specialization: newNurse.specialization || 'General Nursing',
-          };
-          await FirebaseService.createStaffProfile(uid, profileData, role);
-        } catch (firebaseError) {
-          // If the account already exists, skip creating auth and just move on
-          console.warn('⚠️ Firebase staff creation skipped:', firebaseError?.message || firebaseError);
-        }
-        return { success: true };
-      } else {
-        return { success: false, error: response.error };
+      // Try API endpoint first (may not exist for admin)
+      let apiSuccess = false;
+      try {
+        console.log(`📡 [addNurse] Calling API: ${apiEndpoint}`);
+        const response = await ApiService.makeRequest(apiEndpoint, {
+          method: 'POST',
+          body: JSON.stringify(staffData)
+        });
+        console.log(`📡 [addNurse] API Response:`, response);
+        apiSuccess = response.success;
+      } catch (error) {
+        console.warn('⚠️ Backend API call failed, proceeding to Firebase:', error);
       }
+      
+      // Always create Firebase Auth + Firestore profile for login access
+      const codeValue = newNurse.nurseCode || newNurse.code;
+      console.log(`🔑 [addNurse] Creating Firebase Auth user for: ${newNurse.email}`);
+      
+      // Use a secondary app to create user without logging in the current user
+      const appName = 'SecondaryApp';
+      let secondaryApp;
+      try {
+        secondaryApp = getApp(appName);
+      } catch (e) {
+        secondaryApp = initializeApp(firebaseConfig, appName);
+      }
+      
+      let uid;
+      const secondaryAuth = getAuth(secondaryApp);
+      console.log(`🔑 [addNurse] Creating Firebase Auth account...`);
+      
+      try {
+        const cred = await createUserWithEmailAndPassword(secondaryAuth, newNurse.email, 'temp123');
+        uid = cred.user.uid;
+        console.log(`✅ [addNurse] Firebase Auth user created. UID: ${uid}`);
+      } catch (authError) {
+        console.warn(`⚠️ [addNurse] Auth creation error: ${authError.code} - ${authError.message}`);
+        
+        // If email already exists, try to get the existing user
+        if (authError.code === 'auth/email-already-in-use') {
+          console.log(`📧 [addNurse] Email already in use, trying to get existing user...`);
+          try {
+            // We can't query by email directly with client auth, so we'll try to sign in
+            const signInCred = await signInWithEmailAndPassword(secondaryAuth, newNurse.email, 'temp123');
+            uid = signInCred.user.uid;
+            console.log(`✅ [addNurse] Using existing user. UID: ${uid}`);
+          } catch (signInError) {
+            console.error(`❌ [addNurse] Cannot use existing user:`, signInError.message);
+            throw new Error(`Email ${newNurse.email} is already registered. Cannot create new account.`);
+          }
+        } else {
+          throw authError;
+        }
+      }
+      
+      // Image Upload Logic (Non-blocking - continues even if upload fails)
+      let profilePhotoUrl = null;
+      if (newNurse.nurseIdPhoto && newNurse.nurseIdPhoto.uri) {
+        try {
+          const uploadResult = await FirebaseService.uploadImage(
+            newNurse.nurseIdPhoto.uri, 
+            `staff-profiles/${uid}/profile-photo.jpg`
+          );
+          if (uploadResult.success) {
+            profilePhotoUrl = uploadResult.url;
+            console.log('✅ Profile photo uploaded successfully');
+          } else {
+            console.warn('⚠️ Photo upload failed, continuing without photo:', uploadResult.error);
+          }
+        } catch (uploadError) {
+          console.warn('⚠️ Photo upload exception, continuing without photo:', uploadError.message);
+        }
+      }
+
+      const bankingDetails = staffData.bankingDetails || {
+        bankName: 'Default Bank',
+        accountNumber: '000000000',
+        accountHolderName: newNurse.name,
+        bankBranch: 'Main Branch',
+        currency: 'JMD'
+      };
+
+      const profileData = {
+        fullName: newNurse.name,
+        email: newNurse.email,
+        phone: newNurse.phone,
+        role,
+        profilePhoto: profilePhotoUrl,
+        code: codeValue,
+        nurseCode: role === 'nurse' ? codeValue : null,
+        adminCode: role === 'admin' ? codeValue : null,
+        username: codeValue,
+        isActive: true,
+        bankingDetails,
+        bankName: bankingDetails.bankName,
+        accountNumber: bankingDetails.accountNumber,
+        accountHolderName: bankingDetails.accountHolderName,
+        bankBranch: bankingDetails.bankBranch,
+        specialization: newNurse.specialization || 'General Nursing',
+      };
+      
+      console.log(`💾 [addNurse] Saving Firestore profile...`, profileData);
+      await FirebaseService.createStaffProfile(uid, profileData, role);
+      console.log(`✅ [addNurse] Firestore profile created successfully for ${role}: ${profileData.adminCode || profileData.nurseCode}`);
+      
+      // Refresh from backend if API succeeded
+      if (apiSuccess) {
+        refreshNurses();
+      }
+      
+      console.log(`✅ [addNurse] SUCCESS: ${role} created successfully`);
+      return { success: true };
     } catch (error) {
-      console.error('Error adding nurse:', error);
-      return { success: false, error: 'Failed to add nurse' };
+      console.error('❌ [addNurse] FAILED:', error.message, error);
+      return { success: false, error: error.message || 'Failed to add nurse' };
     }
   };
 

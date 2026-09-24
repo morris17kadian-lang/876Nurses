@@ -65,3 +65,16 @@ firebase-service-key*.json
 # MongoDB Compass exports (DO NOT COMMIT)
 compass-connections.json
 **/compass-connections.json
+
+# Expo/EAS local build/export output
+dist/
+dist-ios*/
+dist-*/
+
+# Scratch/backup App variants (not used in build)
+App-backup.js
+App-minimal.js
+
+# Local invoice exports (client financial data - DO NOT COMMIT)
+INVOICE-KADIAN-300K.*
+invoice_tmp.html

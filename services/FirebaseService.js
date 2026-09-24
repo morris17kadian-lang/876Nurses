@@ -280,6 +280,9 @@ class FirebaseService {
       const collectionName = role === 'admin' ? 'admins' : role === 'nurse' ? 'nurses' : USERS_COLLECTION;
       const staffRef = doc(db, collectionName, userId);
 
+      console.log(`💾 [FirebaseService] Creating ${role} profile for UID: ${userId}`);
+      console.log(`💾 [FirebaseService] Collection: ${collectionName}`);
+
       const normalizedPhone =
         userData?.phoneNormalized ||
         (userData?.phone ? FirebaseService.normalizePhoneNumber(userData.phone) : '');
@@ -318,10 +321,14 @@ class FirebaseService {
             }
           : {}),
       };
+      
+      console.log(`💾 [FirebaseService] Writing data to Firestore...`);
       await setDoc(staffRef, staffWithTimestamp);
+      console.log(`✅ [FirebaseService] Successfully created ${role} profile`);
       return { success: true, user: staffWithTimestamp };
     } catch (error) {
-      console.error('Error creating staff profile:', error);
+      console.error(`❌ [FirebaseService] Error creating ${role} profile:`, error.code, error.message);
+      console.error(`   Full error:`, error);
       return { success: false, error: error.message };
     }
   }
