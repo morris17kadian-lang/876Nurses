@@ -42,159 +42,124 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
   const [sequencesInitialized, setSequencesInitialized] = useState(false); // Flag to prevent multiple initializations
   const [showRoleModal, setShowRoleModal] = useState(false); // Role selection modal
 
+  const initializeSequences = useCallback(async () => {
+    // console.log('🔄 Analytics: Starting sequence initialization with persistent tracking...');
+    try {
+      // Get or initialize persistent sequence counters
+      const storedNurseSequence = await AsyncStorage.getItem('nurseSequenceCounter');
+      const storedAdminSequence = await AsyncStorage.getItem('adminSequenceCounter');
+      
+      // Also check existing data to ensure we don't go backwards
+      const allKeys = await AsyncStorage.getAllKeys();
+      const existingNurses = nurses || [];
+      // Try to fetch admins/nurses from backend for accurate sequencing
+      let backendAdmins = [];
+      let backendNurses = [];
+      try {
+        const adminResp = await ApiService.makeRequest('/staff/admins?limit=1000');
+        if (adminResp && adminResp.success && Array.isArray(adminResp.data)) backendAdmins = adminResp.data;
+      } catch (e) {
+        // console.log('⚠️ Could not fetch admin users:', e.message || e);
+      }
+      try {
+        const nurseResp = await ApiService.makeRequest('/staff/nurses?limit=1000');
+        if (nurseResp && nurseResp.success && Array.isArray(nurseResp.data)) backendNurses = nurseResp.data;
+      } catch (e) {
+        // console.log('⚠️ Could not fetch nurse users:', e.message || e);
+      }
+      
+      // Find all nurse and admin codes that have ever been used
+      const existingNurseCodes = [...existingNurses, ...backendNurses]
+        .filter(nurse => {
+          const code = nurse.nurseCode || nurse.code; // Check both new and old field names
+          return code && code.match(/^NURSE\d{3}$/);
+        })
+        .map(nurse => {
+          const code = nurse.nurseCode || nurse.code;
+          const match = code.match(/NURSE(\d{3})/);
+          return match ? parseInt(match[1]) : 0;
+        })
+        .filter(num => num > 0);
+
+      const existingAdminCodes = [...backendAdmins]
+        .filter(admin => {
+          const code = admin.adminCode || admin.code; // Check both new and old field names  
+          return code && code.match(/^ADMIN\d{3}$/);
+        })
+        .map(admin => {
+          const code = admin.adminCode || admin.code;
+          const match = code.match(/ADMIN(\d{3})/);
+          return match ? parseInt(match[1]) : 0;
+        })
+        .filter(num => num > 0);
+      
+      // Ensure ADMIN001 is always recognized as existing (Nurse Bernard)
+      if (!existingAdminCodes.includes(1)) {
+        existingAdminCodes.push(1);
+      }
+      
+      // Also check AsyncStorage keys for historical usage
+      const nurseKeys = allKeys.filter(key => key.match(/^NURSE\d{3}$/));
+      const adminKeys = allKeys.filter(key => key.match(/^ADMIN\d{3}$/));
+      
+      const storageNurseNumbers = nurseKeys.map(key => {
+        const match = key.match(/NURSE(\d{3})/);
+        return match ? parseInt(match[1]) : 0;
+      }).filter(num => num > 0);
+      
+      const storageAdminNumbers = adminKeys.map(key => {
+        const match = key.match(/ADMIN(\d{3})/);
+        return match ? parseInt(match[1]) : 0;
+      }).filter(num => num > 0);
+      
+      // Combine all sources to find the highest ever used numbers
+      const allNurseNumbers = [...new Set([...existingNurseCodes, ...storageNurseNumbers])];
+      const allAdminNumbers = [...new Set([...existingAdminCodes, ...storageAdminNumbers])];
+      
+      // Calculate what the next sequence should be based on highest usage
+      const highestNurseUsed = allNurseNumbers.length > 0 ? Math.max(...allNurseNumbers) : 0;
+      const highestAdminUsed = allAdminNumbers.length > 0 ? Math.max(...allAdminNumbers) : 0;
+      
+      // Get stored counters or initialize them. Prefer backend data when available.
+      const backendFetched = backendAdmins.length > 0 || backendNurses.length > 0;
+      let nextNurseSequence;
+      let nextAdminSequence;
+      if (backendFetched) {
+        nextNurseSequence = highestNurseUsed + 1;
+        nextAdminSequence = highestAdminUsed + 1;
+      } else {
+        nextNurseSequence = storedNurseSequence ? parseInt(storedNurseSequence) : (highestNurseUsed + 1);
+        nextAdminSequence = storedAdminSequence ? parseInt(storedAdminSequence) : (highestAdminUsed + 1);
+      }
+      
+      // Ensure we never go backwards
+      nextNurseSequence = Math.max(nextNurseSequence, highestNurseUsed + 1);
+      nextAdminSequence = Math.max(nextAdminSequence, highestAdminUsed + 1);
+      
+      // Ensure admin sequence is never less than 2 (ADMIN001 is taken by Nurse Bernard)
+      nextAdminSequence = Math.max(nextAdminSequence, 2);
+      
+      // Save the counters back to storage
+      await AsyncStorage.setItem('nurseSequenceCounter', nextNurseSequence.toString());
+      await AsyncStorage.setItem('adminSequenceCounter', nextAdminSequence.toString());
+      
+      setNurseSequence(nextNurseSequence);
+      setAdminSequence(nextAdminSequence);
+      setSequencesInitialized(true);
+    } catch (error) {
+      console.error('❌ Analytics: Error initializing sequences:', error);
+      setNurseSequence(4);
+      setAdminSequence(4);
+      setSequencesInitialized(true);
+    }
+  }, [nurses]);
+
   // Initialize sequences based on persistent sequence tracking
   useEffect(() => {
     // Reset initialization flag when user context changes
     setSequencesInitialized(false);
-    const initializeSequences = async () => {
-      // console.log('🔄 Analytics: Starting sequence initialization with persistent tracking...');
-      try {
-        // Get or initialize persistent sequence counters
-        const storedNurseSequence = await AsyncStorage.getItem('nurseSequenceCounter');
-        const storedAdminSequence = await AsyncStorage.getItem('adminSequenceCounter');
-        
-        // Also check existing data to ensure we don't go backwards
-        const allKeys = await AsyncStorage.getAllKeys();
-        const existingNurses = nurses || [];
-        // Try to fetch admins/nurses from backend for accurate sequencing
-        let backendAdmins = [];
-        let backendNurses = [];
-        if (true) {
-          try {
-            const adminResp = await ApiService.makeRequest('/staff/admins?limit=1000');
-            if (adminResp && adminResp.success && Array.isArray(adminResp.data)) backendAdmins = adminResp.data;
-          } catch (e) {
-            // console.log('⚠️ Could not fetch admin users:', e.message || e);
-          }
-          try {
-            const nurseResp = await ApiService.makeRequest('/staff/nurses?limit=1000');
-            if (nurseResp && nurseResp.success && Array.isArray(nurseResp.data)) backendNurses = nurseResp.data;
-          } catch (e) {
-            // console.log('⚠️ Could not fetch nurse users:', e.message || e);
-          }
-        }
-        
-        // Find all nurse and admin codes that have ever been used
-        const existingNurseCodes = [...existingNurses, ...backendNurses]
-          .filter(nurse => {
-            const code = nurse.nurseCode || nurse.code; // Check both new and old field names
-            return code && code.match(/^NURSE\d{3}$/);
-          })
-          .map(nurse => {
-            const code = nurse.nurseCode || nurse.code;
-            const match = code.match(/NURSE(\d{3})/);
-            return match ? parseInt(match[1]) : 0;
-          })
-          .filter(num => num > 0);
-
-        const existingAdminCodes = [...backendAdmins]
-          .filter(admin => {
-            const code = admin.adminCode || admin.code; // Check both new and old field names  
-            return code && code.match(/^ADMIN\d{3}$/);
-          })
-          .map(admin => {
-            const code = admin.adminCode || admin.code;
-            const match = code.match(/ADMIN(\d{3})/);
-            return match ? parseInt(match[1]) : 0;
-          })
-          .filter(num => num > 0);
-        
-        // Ensure ADMIN001 is always recognized as existing (Nurse Bernard)
-        if (!existingAdminCodes.includes(1)) {
-          existingAdminCodes.push(1);
-          // console.log('🔧 Analytics: Added ADMIN001 (Nurse Bernard) to existing admin codes');
-        }
-        
-        // Also check AsyncStorage keys for historical usage
-        const nurseKeys = allKeys.filter(key => key.match(/^NURSE\d{3}$/));
-        const adminKeys = allKeys.filter(key => key.match(/^ADMIN\d{3}$/));
-        
-        const storageNurseNumbers = nurseKeys.map(key => {
-          const match = key.match(/NURSE(\d{3})/);
-          return match ? parseInt(match[1]) : 0;
-        }).filter(num => num > 0);
-        
-        const storageAdminNumbers = adminKeys.map(key => {
-          const match = key.match(/ADMIN(\d{3})/);
-          return match ? parseInt(match[1]) : 0;
-        }).filter(num => num > 0);
-        
-        // Combine all sources to find the highest ever used numbers
-        const allNurseNumbers = [...new Set([...existingNurseCodes, ...storageNurseNumbers])];
-        const allAdminNumbers = [...new Set([...existingAdminCodes, ...storageAdminNumbers])];
-        
-        // Calculate what the next sequence should be based on highest usage
-        const highestNurseUsed = allNurseNumbers.length > 0 ? Math.max(...allNurseNumbers) : 0;
-        const highestAdminUsed = allAdminNumbers.length > 0 ? Math.max(...allAdminNumbers) : 0;
-        
-        // console.log('🔍 Sequence Debug Info:');
-        // console.log('  - All nurse numbers found:', allNurseNumbers);
-        // console.log('  - All admin numbers found:', allAdminNumbers);
-        // console.log('  - Highest nurse used:', highestNurseUsed);
-        // console.log('  - Highest admin used:', highestAdminUsed);
-        
-        // Get stored counters or initialize them. Prefer backend data when available.
-        const backendFetched = backendAdmins.length > 0 || backendNurses.length > 0;
-        let nextNurseSequence;
-        let nextAdminSequence;
-        if (backendFetched) {
-          nextNurseSequence = highestNurseUsed + 1;
-          nextAdminSequence = highestAdminUsed + 1;
-          // console.log('  - Using backend-derived sequences');
-        } else {
-          nextNurseSequence = storedNurseSequence ? parseInt(storedNurseSequence) : (highestNurseUsed + 1);
-          nextAdminSequence = storedAdminSequence ? parseInt(storedAdminSequence) : (highestAdminUsed + 1);
-          // console.log('  - Using stored/calculated sequences');
-        }
-        
-        // Ensure we never go backwards (in case storage is out of sync)
-        // Ensure we never go backwards
-        nextNurseSequence = Math.max(nextNurseSequence, highestNurseUsed + 1);
-        nextAdminSequence = Math.max(nextAdminSequence, highestAdminUsed + 1);
-        
-        // Override: If sequence is unreasonably high (>50), reset to a reasonable number
-        // This handles cases where test data has inflated the sequence
-        if (nextNurseSequence > 50) {
-          // console.log(`⚠️ Nurse sequence is high (${nextNurseSequence}), resetting to 2`);
-          nextNurseSequence = 2; // Start from 2 since NURSE001 might exist
-        }
-        if (nextAdminSequence > 50) {
-          // console.log(`⚠️ Admin sequence is high (${nextAdminSequence}), resetting to 2`);  
-          nextAdminSequence = 2; // Start from 2 since ADMIN001 exists (Nurse Bernard)
-        }
-        
-        // Ensure admin sequence is never less than 2 (ADMIN001 is taken by Nurse Bernard)
-        nextAdminSequence = Math.max(nextAdminSequence, 2);
-        
-        // console.log('🔍 Analytics: Sequence calculation:');
-        // console.log('  - Stored nurse sequence:', storedNurseSequence);
-        // console.log('  - Stored admin sequence:', storedAdminSequence);
-        // console.log('  - Highest nurse used:', highestNurseUsed);
-        // console.log('  - Highest admin used:', highestAdminUsed);
-        // console.log('  - Next nurse sequence:', nextNurseSequence);
-        // console.log('  - Next admin sequence:', nextAdminSequence);
-        
-        // Save the counters back to storage
-        await AsyncStorage.setItem('nurseSequenceCounter', nextNurseSequence.toString());
-        await AsyncStorage.setItem('adminSequenceCounter', nextAdminSequence.toString());
-        
-        setNurseSequence(nextNurseSequence);
-        setAdminSequence(nextAdminSequence);
-        setSequencesInitialized(true);
-        
-        // console.log('✅ Analytics: Sequence initialization complete - Nurses:', nextNurseSequence, 'Admins:', nextAdminSequence);
-        // console.log('Analytics: Found admin codes from context:', existingAdminCodes);
-      } catch (error) {
-        console.error('❌ Analytics: Error initializing sequences:', error);
-        // Fallback to safe numbers if there's an error
-        setNurseSequence(4);
-        setAdminSequence(4);
-        setSequencesInitialized(true);
-      }
-    };
-    
     initializeSequences();
-  }, [user]);
+  }, [user, initializeSequences]);
 
   // Auto-generate the next sequential code based on role
   const getNextCode = () => {
@@ -212,6 +177,8 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
 
   // Memoize the add function to prevent infinite re-renders
   const handleAddStaff = useCallback(() => {
+    // Refresh sequence right before opening modal to ensure it's up to date
+    initializeSequences();
     setCreateNurseModalVisible(true);
   }, []);
 
