@@ -88,6 +88,19 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
           .filter(num => num > 0);
 
         const existingAdminCodes = [...backendAdmins]
+          .filter(admin => {
+            const code = admin.adminCode || admin.code; // Check both new and old field names  
+            return code && code.match(/^ADMIN\d{3}$/);
+          })
+          .map(admin => {
+            const code = admin.adminCode || admin.code;
+            const match = code.match(/ADMIN(\d{3})/);
+            return match ? parseInt(match[1]) : 0;
+          })
+          .filter(num => num > 0);
+        
+        // Ensure ADMIN001 is always recognized as existing (Nurse Bernard)
+        if (!existingAdminCodes.includes(1)) {
           existingAdminCodes.push(1);
           // console.log('🔧 Analytics: Added ADMIN001 (Nurse Bernard) to existing admin codes');
         }
