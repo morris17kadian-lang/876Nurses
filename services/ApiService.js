@@ -418,8 +418,9 @@ class ApiService {
 
   static async createAppointment(appointmentData) {
     try {
+      const sanitized = ApiService.sanitizeData(appointmentData) || {};
       const docRef = await addDoc(collection(db, COLLECTIONS.APPOINTMENTS), {
-        ...appointmentData,
+        ...sanitized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -437,9 +438,10 @@ class ApiService {
 
   static async updateAppointment(appointmentId, updateData) {
     try {
+      const sanitized = ApiService.sanitizeData(updateData) || {};
       const docRef = doc(db, COLLECTIONS.APPOINTMENTS, appointmentId);
       await updateDoc(docRef, {
-        ...updateData,
+        ...sanitized,
         updatedAt: serverTimestamp(),
       });
       
@@ -656,14 +658,19 @@ class ApiService {
   }
 
   // ==================== ADMINS ====================
-  static async getAdmins() {
+  static async getAdmins(filters = {}) {
     try {
-      const q = query(collection(db, COLLECTIONS.ADMINS), orderBy('name', 'asc'));
-      const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({
+      const snapshot = await getDocs(collection(db, COLLECTIONS.ADMINS));
+      const admins = snapshot.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
       }));
+      // Sort in-memory safely by fullName or name or adminCode
+      return admins.sort((a, b) => {
+        const nameA = a.fullName || a.name || a.adminCode || a.code || '';
+        const nameB = b.fullName || b.name || b.adminCode || b.code || '';
+        return nameA.localeCompare(nameB);
+      });
     } catch (error) {
       console.error('Error fetching admins:', error);
       return [];
@@ -811,8 +818,9 @@ class ApiService {
 
   static async createShiftRequest(shiftRequestData) {
     try {
+      const sanitized = ApiService.sanitizeData(shiftRequestData) || {};
       const docRef = await addDoc(collection(db, COLLECTIONS.SHIFT_REQUESTS), {
-        ...shiftRequestData,
+        ...sanitized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });

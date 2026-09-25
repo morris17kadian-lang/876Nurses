@@ -496,10 +496,19 @@ export const AppointmentProvider = ({ children }) => {
 
       const preferredNursePhoto = appointmentData?.preferredNursePhoto || null;
 
+      const resolvedPatientId = user?.id || user?.uid || appointmentData?.patientId || appointmentData?.email || `guest_${Date.now()}`;
+      const resolvedPatientName = appointmentData.patientName || appointmentData.name || user?.fullName || user?.name || 'Guest Client';
+      const resolvedPatientEmail = appointmentData.email || appointmentData.patientEmail || user?.email || '';
+      const resolvedPatientPhone = appointmentData.phone || appointmentData.patientPhone || user?.phone || '';
+
       const apiData = {
-        patientId: user?.id,
-        patientName: appointmentData.patientName || appointmentData.name || user?.fullName || user?.name, // Ensure patient name is sent
-        clientName: appointmentData.patientName || appointmentData.name || user?.fullName || user?.name, // Add clientName for compatibility
+        patientId: resolvedPatientId,
+        patientName: resolvedPatientName, // Ensure patient name is sent
+        clientName: resolvedPatientName, // Add clientName for compatibility
+        patientEmail: resolvedPatientEmail,
+        clientEmail: resolvedPatientEmail,
+        patientPhone: resolvedPatientPhone,
+        clientPhone: resolvedPatientPhone,
         appointmentType: appointmentData.service,
         service: appointmentData.service, // Add service field for compatibility
         scheduledDate: appointmentData.date,
@@ -545,7 +554,10 @@ export const AppointmentProvider = ({ children }) => {
           // Use the original appointment data with generated ID
           created = {
             _id: `apt_${Date.now()}`,
-            patientId: user?.id,
+            patientId: resolvedPatientId,
+            patientName: resolvedPatientName,
+            patientEmail: resolvedPatientEmail,
+            patientPhone: resolvedPatientPhone,
             service: appointmentData.service,
             scheduledDate: appointmentData.date,
             scheduledTime: convertedTime,
@@ -562,10 +574,10 @@ export const AppointmentProvider = ({ children }) => {
         // Also save locally for offline support
         const newAppointment = {
           id: created._id || created.id || `apt_${Date.now()}`,
-          patientId: created.patientId || user?.id || 'PATIENT001',
-          patientName: created.patientName || user?.fullName || `${user?.firstName || ''} ${user?.lastName || ''}`.trim() || 'Patient',
-          patientEmail: created.patientEmail || user?.email || 'patient@care.com',
-          patientPhone: created.patientPhone || user?.phone || '',
+          patientId: created.patientId || resolvedPatientId || 'PATIENT001',
+          patientName: created.patientName || resolvedPatientName,
+          patientEmail: created.patientEmail || resolvedPatientEmail || 'patient@care.com',
+          patientPhone: created.patientPhone || resolvedPatientPhone || '',
           service: created.service || appointmentData.service,
           date: created.scheduledDate || appointmentData.date,
           time: created.scheduledTime || appointmentData.time,
@@ -630,12 +642,17 @@ export const AppointmentProvider = ({ children }) => {
       console.error('⚠️ API call failed, saving locally:', error.message);
       
       // Fallback to local storage if API fails
+      const resolvedPatientId = user?.id || user?.uid || appointmentData?.patientId || appointmentData?.email || `guest_${Date.now()}`;
+      const resolvedPatientName = appointmentData.patientName || appointmentData.name || user?.fullName || user?.name || 'Guest Client';
+      const resolvedPatientEmail = appointmentData.email || appointmentData.patientEmail || user?.email || 'patient@care.com';
+      const resolvedPatientPhone = appointmentData.phone || appointmentData.patientPhone || user?.phone || '';
+
       const newAppointment = {
         id: `apt_${Date.now()}`,
-        patientId: user?.id || 'PATIENT001',
-        patientName: user?.name || 'John Smith',
-        patientEmail: user?.email || 'john@example.com',
-        patientPhone: user?.phone || '876-555-0123',
+        patientId: resolvedPatientId,
+        patientName: resolvedPatientName,
+        patientEmail: resolvedPatientEmail,
+        patientPhone: resolvedPatientPhone,
         service: appointmentData.service,
         date: appointmentData.date,
         time: appointmentData.time,

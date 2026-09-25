@@ -6,7 +6,10 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "admin:install": "cd admin-web && npm install",
+    "admin:web": "cd admin-web && npm run dev",
+    "admin:build": "cd admin-web && npm run build"
   },
   "dependencies": {
     "@expo-google-fonts/poppins": "^0.2.3",
