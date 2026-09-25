@@ -176,11 +176,11 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
   }, [staffRole, nurseSequence, adminSequence]);
 
   // Memoize the add function to prevent infinite re-renders
-  const handleAddStaff = useCallback(() => {
-    // Refresh sequence right before opening modal to ensure it's up to date
-    initializeSequences();
+  const handleAddStaff = useCallback(async () => {
+    // Wait for sequence refresh so the modal opens with the latest code.
+    await initializeSequences();
     setCreateNurseModalVisible(true);
-  }, []);
+  }, [initializeSequences]);
 
   // Expose add function to parent component when embedded
   useEffect(() => {
