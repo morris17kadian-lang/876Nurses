@@ -5,6 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import { useAuth } from '../context/AuthContext';
@@ -208,6 +209,14 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
       setAdminStaff([]);
     }
   }, [user, loadAdminStaff]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (user) {
+        loadAdminStaff();
+      }
+    }, [user, loadAdminStaff])
+  );
 
   // Auto-generate the next sequential code based on role
   const getNextCode = () => {
