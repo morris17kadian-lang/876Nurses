@@ -18,6 +18,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
   const { createNurseAccount, user } = useAuth();
   const { nurses, addNurse, updateNurse, updateNurseStatus, deleteNurse, getNursesByStatus } = useNurses();
   const insets = useSafeAreaInsets();
+  const [adminStaff, setAdminStaff] = useState([]);
   const [selectedCard, setSelectedCard] = useState(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [createNurseModalVisible, setCreateNurseModalVisible] = useState(false);
@@ -41,6 +42,45 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
   const [adminSequence, setAdminSequence] = useState(1); // Sequential counter for admins
   const [sequencesInitialized, setSequencesInitialized] = useState(false); // Flag to prevent multiple initializations
   const [showRoleModal, setShowRoleModal] = useState(false); // Role selection modal
+
+  const loadAdminStaff = useCallback(async () => {
+    try {
+      const admins = await ApiService.getAdmins();
+      const mappedAdmins = admins.map((admin) => ({
+        id: admin.id,
+        _id: admin.id,
+        name: admin.fullName || admin.name || admin.username || admin.adminCode || admin.code || 'Unknown Admin',
+        fullName: admin.fullName || admin.name || admin.username || admin.adminCode || admin.code || 'Unknown Admin',
+        email: admin.email || '',
+        phone: admin.phone || '',
+        code: admin.adminCode || admin.code || admin.username || '',
+        adminCode: admin.adminCode || admin.code || admin.username || '',
+        role: 'admin',
+        profilePhoto: admin.profilePhoto || admin.profileImage || null,
+        specialization: admin.title || 'Administrative Staff',
+        emergencyContact: admin.emergencyContact || 'Not provided',
+        emergencyPhone: admin.emergencyPhone || 'Not provided',
+        bankName: admin.bankingDetails?.bankName || 'Not provided',
+        accountNumber: admin.bankingDetails?.accountNumber || 'Not provided',
+        accountHolderName: admin.bankingDetails?.accountHolderName || 'Not provided',
+        bankBranch: admin.bankingDetails?.bankBranch || 'Not provided',
+        status: admin.isActive === false ? 'offline' : 'available',
+        assignedClients: 0,
+        isActive: admin.isActive !== false,
+        dateAdded: admin.createdAt?.seconds
+          ? new Date(admin.createdAt.seconds * 1000).toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            })
+          : new Date().toLocaleDateString(),
+      }));
+      setAdminStaff(mappedAdmins);
+    } catch (error) {
+      console.error('Error loading admins for staff management:', error);
+      setAdminStaff([]);
+    }
+  }, []);
 
   const initializeSequences = useCallback(async () => {
     // console.log('🔄 Analytics: Starting sequence initialization with persistent tracking...');
@@ -161,6 +201,14 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
     initializeSequences();
   }, [user, initializeSequences]);
 
+  useEffect(() => {
+    if (user) {
+      loadAdminStaff();
+    } else {
+      setAdminStaff([]);
+    }
+  }, [user, loadAdminStaff]);
+
   // Auto-generate the next sequential code based on role
   const getNextCode = () => {
     if (staffRole === 'admin') {
@@ -259,7 +307,18 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
     };
 
     let base = [];
-    const source = Array.isArray(nurses) ? nurses : [];
+    const combinedStaff = new Map();
+    const nurseSource = Array.isArray(nurses) ? nurses : [];
+    const adminSource = Array.isArray(adminStaff) ? adminStaff : [];
+
+    [...nurseSource, ...adminSource].forEach((staffMember) => {
+      const key = staffMember?.code || staffMember?.adminCode || staffMember?.id;
+      if (key) {
+        combinedStaff.set(key, staffMember);
+      }
+    });
+
+    const source = Array.from(combinedStaff.values());
 
     switch (selectedCard) {
       case 'available':
@@ -557,6 +616,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
       const authResult = result; // Keep variable name for compatibility
 
       if (authResult.success) {
+        await loadAdminStaff();
         // Increment the sequence counter for next time (Only if creating new)
         if (!editMode) {
           try {
