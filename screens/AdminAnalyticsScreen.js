@@ -203,19 +203,13 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
   }, [user, initializeSequences]);
 
   useEffect(() => {
-    if (user) {
-      loadAdminStaff();
-    } else {
-      setAdminStaff([]);
-    }
-  }, [user, loadAdminStaff]);
+    loadAdminStaff();
+  }, [loadAdminStaff]);
 
   useFocusEffect(
     useCallback(() => {
-      if (user) {
-        loadAdminStaff();
-      }
-    }, [user, loadAdminStaff])
+      loadAdminStaff();
+    }, [loadAdminStaff])
   );
 
   // Auto-generate the next sequential code based on role
