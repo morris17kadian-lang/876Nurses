@@ -15,7 +15,7 @@ import FirebaseService from '../services/FirebaseService';
 import { clearAllAdminData, checkCurrentData } from '../utils/clearData';
 import BankAutocomplete from '../components/BankAutocomplete';
 
-export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = false, onAddPress, onDebugUpdate, searchQuery = '' }) {
+export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = false, onAddPress, searchQuery = '' }) {
   const { createNurseAccount, user } = useAuth();
   const { nurses, addNurse, updateNurse, updateNurseStatus, deleteNurse, getNursesByStatus } = useNurses();
   const insets = useSafeAreaInsets();
@@ -212,16 +212,6 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
     }, [loadAdminStaff])
   );
 
-  useEffect(() => {
-    if (typeof onDebugUpdate !== 'function') return;
-    onDebugUpdate({
-      adminCount: adminStaff.length,
-      adminCodes: adminStaff.map((admin) => admin.code).filter(Boolean),
-      visibleCount: getDisplayedNurses().length,
-      selectedCard: selectedCard || 'all',
-    });
-  }, [adminStaff, onDebugUpdate, selectedCard, searchQuery, nurses]);
-
   // Auto-generate the next sequential code based on role
   const getNextCode = () => {
     if (staffRole === 'admin') {
@@ -356,9 +346,6 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
       return 0;
     });
   };
-
-  const debugStaffRows = getDisplayedNurses();
-  const debugAdminCodes = adminStaff.map((admin) => admin.code).filter(Boolean);
 
   const handleDeleteNurse = (nurse) => {
     setNurseToDelete(nurse);
@@ -721,16 +708,6 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
       />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {isEmbedded && (
-          <View style={styles.debugCard}>
-            <Text style={styles.debugTitle}>Staff Debug</Text>
-            <Text style={styles.debugText}>Loaded admins: {adminStaff.length}</Text>
-            <Text style={styles.debugText}>Admin codes: {debugAdminCodes.join(', ') || 'none'}</Text>
-            <Text style={styles.debugText}>Visible staff rows: {debugStaffRows.length}</Text>
-            <Text style={styles.debugText}>Filter: {selectedCard || 'all'}</Text>
-          </View>
-        )}
-
         {/* Stats Cards */}
         <View style={styles.statsContainer}>
           <TouchableWeb 
@@ -804,7 +781,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
               'All Staff Members'
             }
           </Text>
-          {debugStaffRows.map((nurse, index) => (
+          {getDisplayedNurses().map((nurse, index) => (
             <View key={`nurse-${nurse.id || nurse.code || nurse.name || 'unknown'}-${index}`} style={styles.compactCard}>
               <TouchableWeb
                 onLongPress={() => {
