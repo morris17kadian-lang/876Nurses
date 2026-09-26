@@ -1,5 +1,5 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, Image, TextInput } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -28,13 +28,13 @@ export default function AdminUserManagementScreen({ navigation, route }) {
   const [staffCount, setStaffCount] = useState(0);
 
   // Function to handle setting the add staff function
-  const handleSetAddStaffFunction = (addFunction) => {
+  const handleSetAddStaffFunction = useCallback((addFunction) => {
     addStaffFunctionRef.current = addFunction;
-  };
+  }, []);
 
-  const handleStaffDebugUpdate = (info) => {
+  const handleStaffDebugUpdate = useCallback((info) => {
     setDebugInfo(info || null);
-  };
+  }, []);
 
   useEffect(() => {
     if (!showSearch) return;
