@@ -93,8 +93,16 @@ service cloud.firestore {
           !('assignedNurseId' in request.resource.data)
         );
       // Allow nurses and admins to update appointments (for coverage requests, status changes, etc.)
-      // App layer handles authorization for specific operations
-      allow update: if isAuthenticated();
+      // App layer handles authorization for specific operations.
+      // Also allow unauthenticated (guest) callers to cancel their own still-pending
+      // request, mirroring the guarded guest create rule above: only a
+      // pending -> cancelled transition touching a small, safe set of fields.
+      allow update: if isAuthenticated() ||
+        (
+          resource.data.status == 'pending' &&
+          request.resource.data.status == 'cancelled' &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'notes', 'cancelledAt', 'cancellationReason', 'updatedAt'])
+        );
       allow delete: if isAdmin();
     }
     

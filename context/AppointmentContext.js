@@ -154,6 +154,37 @@ export const AppointmentProvider = ({ children }) => {
     }
   };
 
+  // Removes a single appointment from the dedicated guest pending cache. This must be
+  // called whenever a guest's appointment status changes away from 'pending' (e.g. on
+  // cancellation), otherwise the stale cached entry will keep resurrecting the
+  // appointment as "pending" when merged with the main appointments list on screen.
+  const removeGuestPendingAppointment = async (appointmentId) => {
+    if (user || !appointmentId) return;
+    try {
+      const raw = await AsyncStorage.getItem(guestPendingStorageKey);
+      const existing = raw ? JSON.parse(raw) : [];
+      const appointmentsToSave = Array.isArray(existing) ? existing : [];
+      const remaining = appointmentsToSave.filter((item) =>
+        (item?.id || item?.appointmentId) !== appointmentId
+      );
+      await AsyncStorage.setItem(guestPendingStorageKey, JSON.stringify(remaining));
+      await writeGuestDebugLog({
+        step: 'remove',
+        result: 'success',
+        appointmentId,
+        cacheCount: remaining.length,
+      });
+    } catch (error) {
+      console.error('Failed to remove guest pending appointment:', error);
+      await writeGuestDebugLog({
+        step: 'remove',
+        result: 'error',
+        appointmentId,
+        message: error?.message || String(error),
+      });
+    }
+  };
+
   const loadGuestIdentity = useCallback(async () => {
     try {
       const raw = await AsyncStorage.getItem('@876_guest_identity');
@@ -1320,6 +1351,10 @@ export const AppointmentProvider = ({ children }) => {
 
   // Cancel appointment
   const cancelAppointment = async (appointmentId, reason = '') => {
+    const isGuest = !user;
+    let apiSucceeded = false;
+    let apiError = null;
+
     try {
       // Call backend to update status
       const response = await ApiService.makeRequest(`/appointments/${appointmentId}`, {
@@ -1329,58 +1364,78 @@ export const AppointmentProvider = ({ children }) => {
           notes: reason
         })
       });
-
-      if (response.success) {
-        const updatedAppointments = appointments.map(apt => 
-          apt.id === appointmentId 
-            ? { 
-                ...apt, 
-                status: 'cancelled',
-                cancelledAt: new Date().toISOString(),
-                cancellationReason: reason,
-                updatedAt: new Date().toISOString(),
-              }
-            : apt
-        );
-
-        setAppointments(updatedAppointments);
-        await saveAppointments(updatedAppointments);
-        
-        const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
-
-        // Send notifications (non-blocking)
-        Promise.all([
-          sendNotificationToUser(
-            appointment.patientId,
-            'patient',
-            'Appointment Cancelled',
-            `Your appointment on ${new Date(appointment.appointmentDate).toLocaleDateString()} has been cancelled${reason ? ': ' + reason : ''}`,
-            {
-              appointmentId,
-              type: 'appointment_cancelled'
-            }
-          ),
-          sendNotificationToUser(
-            'admin-001',
-            'admin',
-            'Appointment Cancelled',
-            `Appointment with ${appointment.patientName} has been cancelled${reason ? ': ' + reason : ''}`,
-            {
-              appointmentId,
-              type: 'appointment_cancelled'
-            }
-          )
-        ]).catch(err => console.error('Notification error:', err));
-
-        return appointment;
-      } else {
-        console.error('❌ Failed to cancel appointment:', response.error);
-        throw new Error(response.error || 'Failed to cancel appointment');
+      apiSucceeded = Boolean(response?.success);
+      if (!apiSucceeded) {
+        apiError = response?.error || 'Cancel API returned success:false';
       }
     } catch (error) {
-      console.error('❌ Error cancelling appointment:', error.message);
-      throw error;
+      apiError = error?.message || String(error);
     }
+
+    // Guests are unauthenticated, and the appointment may have already been
+    // deleted/modified server-side (guests can't read Firestore to notice this).
+    // Rather than surface a confusing error and leave a stale "pending" entry
+    // forever, always reflect the cancellation locally for guests.
+    if (!apiSucceeded && !isGuest) {
+      console.error('❌ Failed to cancel appointment:', apiError);
+      throw new Error(apiError || 'Failed to cancel appointment');
+    }
+
+    if (!apiSucceeded && isGuest) {
+      console.warn('⚠️ Guest cancel API call failed (permission-denied or already removed server-side), cancelling locally:', apiError);
+    }
+
+    const updatedAppointments = appointments.map(apt => 
+      apt.id === appointmentId 
+        ? { 
+            ...apt, 
+            status: 'cancelled',
+            cancelledAt: new Date().toISOString(),
+            cancellationReason: reason,
+            updatedAt: new Date().toISOString(),
+          }
+        : apt
+    );
+
+    setAppointments(updatedAppointments);
+    await saveAppointments(updatedAppointments);
+
+    if (isGuest) {
+      // Remove the stale dedicated-cache entry, otherwise it will keep
+      // resurrecting this appointment as "pending" when merged on screen.
+      await removeGuestPendingAppointment(appointmentId);
+    }
+
+    const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+    if (!appointment) {
+      return null;
+    }
+
+    // Send notifications (non-blocking)
+    Promise.all([
+      sendNotificationToUser(
+        appointment.patientId,
+        'patient',
+        'Appointment Cancelled',
+        `Your appointment on ${new Date(appointment.appointmentDate).toLocaleDateString()} has been cancelled${reason ? ': ' + reason : ''}`,
+        {
+          appointmentId,
+          type: 'appointment_cancelled'
+        }
+      ),
+      sendNotificationToUser(
+        'admin-001',
+        'admin',
+        'Appointment Cancelled',
+        `Appointment with ${appointment.patientName} has been cancelled${reason ? ': ' + reason : ''}`,
+        {
+          appointmentId,
+          type: 'appointment_cancelled'
+        }
+      )
+    ]).catch(err => console.error('Notification error:', err));
+
+    return appointment;
   };
 
   // Get appointments by patient ID (for patient screens)

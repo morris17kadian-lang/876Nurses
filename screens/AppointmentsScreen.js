@@ -1978,6 +1978,13 @@ export default function AppointmentsScreen({ navigation, route }) {
           onPress: async () => {
             try {
               await cancelAppointment(appointment.id, 'Cancelled by user');
+              // Guest cancellations are reflected in a separate AsyncStorage cache
+              // (guestCachedAppointments) that only this screen owns; refresh it now
+              // so the cancelled appointment disappears from Pending immediately
+              // instead of waiting for the next screen focus.
+              if (!user) {
+                await loadGuestIdentity();
+              }
               Alert.alert(
                 'Appointment Cancelled',
                 'Your appointment has been cancelled successfully.',
@@ -3499,6 +3506,13 @@ export default function AppointmentsScreen({ navigation, route }) {
                                       console.error('Failed to send cancellation notification:', notifError);
                                     }
                                     
+                                    // Guest cancellations live in a separate AsyncStorage cache
+                                    // this screen owns; refresh it now so the item disappears
+                                    // from Pending immediately.
+                                    if (!user) {
+                                      await loadGuestIdentity();
+                                    }
+
                                     setDetailsModalVisible(false);
                                     Alert.alert('Success', 'Appointment cancelled. Admin has been notified.');
                                   } catch (error) {
