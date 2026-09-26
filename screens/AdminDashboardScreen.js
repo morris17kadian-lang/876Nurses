@@ -6003,6 +6003,11 @@ export default function AdminDashboardScreen({ navigation, route }) {
             
             {selectedAppointmentDetails && (
               <>
+                {user?.role === 'admin' && (
+                  <Text style={{ fontSize: 11, color: '#b45309', paddingHorizontal: 16, paddingTop: 4 }}>
+                    DEBUG role={String(user?.role)} · status={String(selectedAppointmentDetails.status)} · isRecurring={String(selectedAppointmentDetails.isRecurring)} · isShiftRequest={String(selectedAppointmentDetails.isShiftRequest)}
+                  </Text>
+                )}
                 <ScrollView
                   style={styles.appointmentDetailsScroll}
                   contentContainerStyle={styles.appointmentDetailsContent}
