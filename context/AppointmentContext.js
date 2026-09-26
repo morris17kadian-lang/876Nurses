@@ -25,6 +25,7 @@ export const AppointmentProvider = ({ children }) => {
   const [appointments, setAppointments] = useState([]);
   const [nurses, setNurses] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [guestIdentity, setGuestIdentity] = useState(null);
   const refreshInProgressRef = useRef(false); // Prevent concurrent refreshes (ref avoids unstable dep)
   const [lastRefreshTime, setLastRefreshTime] = useState(0); // Track last refresh time
   const appointmentsRef = useRef(appointments);
@@ -95,6 +96,19 @@ export const AppointmentProvider = ({ children }) => {
     }
   };
 
+  const loadGuestIdentity = useCallback(async () => {
+    try {
+      const raw = await AsyncStorage.getItem('@876_guest_identity');
+      const parsed = raw ? JSON.parse(raw) : null;
+      setGuestIdentity(parsed);
+      return parsed;
+    } catch (error) {
+      console.error('Failed to load guest identity:', error);
+      setGuestIdentity(null);
+      return null;
+    }
+  }, []);
+
   const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
   const hasText = (value) => normalizeText(value).length > 0;
 
@@ -137,7 +151,17 @@ export const AppointmentProvider = ({ children }) => {
   // Refresh appointments from API
   const refreshAppointments = useCallback(async () => {
     if (!user) {
-      setAppointments([]);
+      try {
+        await loadGuestIdentity();
+        const storedAppointments = await AsyncStorage.getItem(getAppointmentsStorageKey());
+        const parsedAppointments = storedAppointments ? JSON.parse(storedAppointments) : [];
+        const migratedAppointments = Array.isArray(parsedAppointments)
+          ? parsedAppointments.map(migrateLegacyNotes)
+          : [];
+        setAppointments(migratedAppointments);
+      } catch (error) {
+        console.error('Failed to refresh guest appointments:', error);
+      }
       return;
     }
     
@@ -374,7 +398,7 @@ export const AppointmentProvider = ({ children }) => {
       setIsLoading(false);
       refreshInProgressRef.current = false; // Mark refresh as complete
     }
-  }, [nurses, nursesFromContext, user, createAppointmentNotification, createSystemNotification, sendNotificationToUser, scheduleAppointmentReminder, incrementAssignedClients]);
+  }, [nurses, nursesFromContext, user, createAppointmentNotification, createSystemNotification, sendNotificationToUser, scheduleAppointmentReminder, incrementAssignedClients, loadGuestIdentity]);
 
   // Book new appointment (Patient action)
   // Map service names to valid serviceType enum values
@@ -1611,12 +1635,20 @@ export const AppointmentProvider = ({ children }) => {
       
       return () => clearInterval(refreshInterval);
     } else {
-      // Clear appointments if no user
-      setAppointments([]);
-      // Also clear from storage
-      AsyncStorage.removeItem(getAppointmentsStorageKey()).catch(err => 
-        console.error('Failed to clear appointments storage:', err)
-      );
+      loadGuestIdentity().then(() => {
+        AsyncStorage.getItem(getAppointmentsStorageKey())
+          .then((storedAppointments) => {
+            const parsedAppointments = storedAppointments ? JSON.parse(storedAppointments) : [];
+            const migratedAppointments = Array.isArray(parsedAppointments)
+              ? parsedAppointments.map(migrateLegacyNotes)
+              : [];
+            setAppointments(migratedAppointments);
+          })
+          .catch((error) => {
+            console.error('Failed to load guest appointments:', error);
+            setAppointments([]);
+          });
+      });
     }
   }, [user?.id]); // Only trigger when user ID changes, not on every user object change
 
