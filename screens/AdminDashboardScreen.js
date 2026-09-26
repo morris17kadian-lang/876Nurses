@@ -5980,7 +5980,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
         }}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+          <View style={[styles.modalContent, styles.appointmentModalContent]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
                 {(() => {
@@ -6164,6 +6164,16 @@ export default function AdminDashboardScreen({ navigation, route }) {
                         d.serviceName ||
                         'General Care';
 
+                      const appointmentStatus = String(
+                        d.status || d.appointmentStatus || d.requestStatus || ''
+                      ).trim().toLowerCase();
+                      const isPendingLikeAppointment = [
+                        'pending',
+                        'requested',
+                        'awaiting',
+                        'unassigned',
+                      ].includes(appointmentStatus);
+
                       // Resolve actual assigned nurse using roster and fresh map
                       const assignedId =
                         d.nurseId ||
@@ -6299,6 +6309,52 @@ export default function AdminDashboardScreen({ navigation, route }) {
                         d.staffCode ||
                         null;
 
+                      const hasMeaningfulNurseValue = (value) => {
+                        if (value === null || value === undefined) return false;
+                        const normalized = String(value).trim().toLowerCase();
+                        return Boolean(normalized) && ![
+                          'assigned nurse',
+                          'unassigned',
+                          'requested nurse',
+                          'any nurse',
+                          'none',
+                          'null',
+                          'undefined',
+                        ].includes(normalized);
+                      };
+
+                      // A pending appointment can contain nurseId/nurseCode fields from
+                      // a requested-nurse or legacy payload. Those fields do not mean an
+                      // admin has assigned a nurse. Only show the assigned card when a
+                      // real nurse record/name is resolved, or when a non-pending record
+                      // carries an assignment key.
+                      const hasResolvedNurseRecord = Boolean(rosterNurse || freshMapNurse);
+                      const hasNamedAssignedNurse = Boolean(
+                        hasMeaningfulNurseValue(d.assignedNurseName) ||
+                        hasMeaningfulNurseValue(d.nurseName) ||
+                        hasMeaningfulNurseValue(
+                          typeof d.assignedNurse === 'object' ? formatNurseName(d.assignedNurse) : null
+                        ) ||
+                        hasMeaningfulNurseValue(
+                          typeof d.nurse === 'object' ? formatNurseName(d.nurse) : null
+                        )
+                      );
+                      const hasExplicitAssignmentKey = Boolean(
+                        d.assignedNurseId ||
+                        d.assignedNurse?.id ||
+                        d.assignedNurse?._id ||
+                        d.assignedNurse?.nurseId ||
+                        d.assignedNurseCode ||
+                        d.assignedNurse?.nurseCode ||
+                        d.assignedNurse?.staffCode
+                      );
+                      const hasAssignedNurse = Boolean(
+                        hasResolvedNurseRecord ||
+                        hasNamedAssignedNurse ||
+                        (!isPendingLikeAppointment &&
+                          (hasExplicitAssignmentKey || resolvedAssignedNurseId || resolvedAssignedNurseCode))
+                      );
+
                       const appointmentDateLabel = (() => {
                         const raw =
                           d.date ||
@@ -6390,48 +6446,62 @@ export default function AdminDashboardScreen({ navigation, route }) {
                       return (
                         <View style={styles.shiftCard}>
                           <View style={styles.shiftCardHeader}>
-                            {nursePhoto ? (
-                              <Image source={{ uri: nursePhoto }} style={styles.shiftAvatar} resizeMode="cover" />
+                            {hasAssignedNurse ? (
+                              <>
+                                {nursePhoto ? (
+                                  <Image source={{ uri: nursePhoto }} style={styles.shiftAvatar} resizeMode="cover" />
+                                ) : (
+                                  <View style={styles.shiftAvatarFallback}>
+                                    <MaterialCommunityIcons name="account" size={30} color={COLORS.primary} />
+                                  </View>
+                                )}
+                                <View style={{ flex: 1 }}>
+                                  <Text style={styles.shiftNurseName}>{nurseDisplayName}</Text>
+                                  <Text style={styles.shiftNurseMeta}>{nurseSpecialty}</Text>
+                                  {nurseCode ? <Text style={styles.shiftNurseCode}>{nurseCode}</Text> : null}
+                                </View>
+                                <TouchableWeb
+                                  style={styles.shiftStatusChip}
+                                  onPress={() => {
+                                    const nurseForDetails = rosterNurse || freshMapNurse || d.assignedNurse || d.nurse || {
+                                      fullName: nurseDisplayName,
+                                      name: nurseDisplayName,
+                                      nurseCode,
+                                      staffCode: nurseCode,
+                                    };
+                                    // In admin completed modal, still show clock details when any clock activity exists
+                                    if (hasClockIn || hasClockOut) {
+                                      const payload = extractClockDetailsFromRecord(clockEntryForAssigned);
+                                      if (payload) {
+                                        openClockDetailsModal('Clock Details', payload, { reopenAppointmentDetails: true });
+                                        return;
+                                      }
+                                    }
+                                    openNurseDetailsModal(nurseForDetails);
+                                  }}
+                                >
+                                  <LinearGradient
+                                    colors={(hasClockIn || hasClockOut) ? GRADIENTS.warning : GRADIENTS.primary}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 0, y: 1 }}
+                                    style={styles.shiftStatusChipGradient}
+                                  >
+                                    <MaterialCommunityIcons name="eye" size={14} color={COLORS.white} />
+                                    <Text style={styles.shiftStatusChipText}>View</Text>
+                                  </LinearGradient>
+                                </TouchableWeb>
+                              </>
                             ) : (
-                              <View style={styles.shiftAvatarFallback}>
-                                <MaterialCommunityIcons name="account" size={30} color={COLORS.primary} />
-                              </View>
+                              <>
+                                <View style={styles.shiftAvatarFallback}>
+                                  <MaterialCommunityIcons name="account-clock" size={30} color={COLORS.textSecondary} />
+                                </View>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={styles.shiftNurseName}>Not Yet Assigned</Text>
+                                  <Text style={styles.shiftNurseMeta}>Awaiting admin assignment</Text>
+                                </View>
+                              </>
                             )}
-                            <View style={{ flex: 1 }}>
-                              <Text style={styles.shiftNurseName}>{nurseDisplayName}</Text>
-                              <Text style={styles.shiftNurseMeta}>{nurseSpecialty}</Text>
-                              {nurseCode ? <Text style={styles.shiftNurseCode}>{nurseCode}</Text> : null}
-                            </View>
-                            <TouchableWeb
-                              style={styles.shiftStatusChip}
-                              onPress={() => {
-                                const nurseForDetails = rosterNurse || freshMapNurse || d.assignedNurse || d.nurse || {
-                                  fullName: nurseDisplayName,
-                                  name: nurseDisplayName,
-                                  nurseCode,
-                                  staffCode: nurseCode,
-                                };
-                                // In admin completed modal, still show clock details when any clock activity exists
-                                if (hasClockIn || hasClockOut) {
-                                  const payload = extractClockDetailsFromRecord(clockEntryForAssigned);
-                                  if (payload) {
-                                    openClockDetailsModal('Clock Details', payload, { reopenAppointmentDetails: true });
-                                    return;
-                                  }
-                                }
-                                openNurseDetailsModal(nurseForDetails);
-                              }}
-                            >
-                              <LinearGradient
-                                colors={(hasClockIn || hasClockOut) ? GRADIENTS.warning : GRADIENTS.primary}
-                                start={{ x: 0, y: 0 }}
-                                end={{ x: 0, y: 1 }}
-                                style={styles.shiftStatusChipGradient}
-                              >
-                                <MaterialCommunityIcons name="eye" size={14} color={COLORS.white} />
-                                <Text style={styles.shiftStatusChipText}>View</Text>
-                              </LinearGradient>
-                            </TouchableWeb>
                           </View>
 
                           <View style={styles.shiftRow}>
@@ -7306,7 +7376,24 @@ export default function AdminDashboardScreen({ navigation, route }) {
                 )}
 
                 {/* Action Buttons for Pending Appointments (not recurring - nurse handles those) */}
-                {user?.role === 'admin' && selectedAppointmentDetails.status === 'pending' && !selectedAppointmentDetails.isRecurring && (
+                {user?.role === 'admin' &&
+                  ['pending', 'requested', 'awaiting', 'unassigned'].includes(
+                    String(
+                      selectedAppointmentDetails.status ||
+                      selectedAppointmentDetails.appointmentStatus ||
+                      selectedAppointmentDetails.requestStatus ||
+                      ''
+                    ).trim().toLowerCase()
+                  ) &&
+                  !(
+                    selectedAppointmentDetails.isRecurring === true ||
+                    selectedAppointmentDetails.isRecurring === 1 ||
+                    ['true', '1', 'yes'].includes(String(selectedAppointmentDetails.isRecurring).trim().toLowerCase()) ||
+                    selectedAppointmentDetails.recurringPattern ||
+                    selectedAppointmentDetails.frequency ||
+                    selectedAppointmentDetails.adminRecurring ||
+                    selectedAppointmentDetails.recurringFrequency
+                  ) && (
                 <View style={styles.modalFooter}>
                   <TouchableWeb
                     style={styles.modalDenyButton}
@@ -10840,6 +10927,9 @@ const styles = StyleSheet.create({
     elevation: 10,
     overflow: 'hidden',
   },
+  appointmentModalContent: {
+    height: Platform.OS === 'android' ? '93%' : '85%',
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -11694,7 +11784,7 @@ const styles = StyleSheet.create({
     paddingBottom: 30,
   },
   appointmentDetailsScroll: {
-    // Intentionally no flex to avoid forcing modal height
+    flex: 1,
   },
   detailsSection: {
     marginBottom: 20,
