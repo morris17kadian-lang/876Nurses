@@ -71,6 +71,7 @@ export default function AppointmentsScreen({ navigation, route }) {
   // (see AppointmentContext.bookAppointment) so guest screens can find their own requests.
   const [guestIdentity, setGuestIdentity] = useState(null);
   const [guestCachedAppointments, setGuestCachedAppointments] = useState([]);
+  const [guestPendingDebug, setGuestPendingDebug] = useState(null);
 
   const loadGuestIdentity = React.useCallback(async () => {
     if (user) return;
@@ -85,13 +86,25 @@ export default function AppointmentsScreen({ navigation, route }) {
       }
       const cachedAppointments = rawAppointments ? JSON.parse(rawAppointments) : [];
       const pendingAppointments = rawPendingAppointments ? JSON.parse(rawPendingAppointments) : [];
-      setGuestCachedAppointments([
+      const allCachedAppointments = [
         ...(Array.isArray(cachedAppointments) ? cachedAppointments : []),
         ...(Array.isArray(pendingAppointments) ? pendingAppointments : []),
-      ]);
+      ];
+      setGuestCachedAppointments(allCachedAppointments);
+      setGuestPendingDebug({
+        sharedCacheCount: Array.isArray(cachedAppointments) ? cachedAppointments.length : 0,
+        dedicatedPendingCount: Array.isArray(pendingAppointments) ? pendingAppointments.length : 0,
+        guestId: raw ? JSON.parse(raw)?.patientId || null : null,
+      });
+      console.log('[GuestPendingDebug] Loaded guest appointment cache', {
+        sharedCacheCount: Array.isArray(cachedAppointments) ? cachedAppointments.length : 0,
+        dedicatedPendingCount: Array.isArray(pendingAppointments) ? pendingAppointments.length : 0,
+        guestId: raw ? JSON.parse(raw)?.patientId || null : null,
+      });
     } catch (error) {
       console.error('Failed to load guest identity:', error);
       setGuestCachedAppointments([]);
+      setGuestPendingDebug({ error: error?.message || 'Cache read failed' });
     }
   }, [user]);
 
@@ -2314,6 +2327,20 @@ export default function AppointmentsScreen({ navigation, route }) {
                 ? 'No appointments waiting for your confirmation'
                 : 'Your completed appointments will appear here'}
             </Text>
+            {!user && activeTab === 'pending' && guestPendingDebug && (
+              <View style={styles.guestDebugPanel}>
+                <Text style={styles.guestDebugTitle}>Guest booking diagnostics</Text>
+                <Text style={styles.guestDebugText}>
+                  Local Pending cache: {guestPendingDebug.dedicatedPendingCount ?? 0} · Shared cache: {guestPendingDebug.sharedCacheCount ?? 0}
+                </Text>
+                <Text style={styles.guestDebugText}>
+                  Guest ID: {guestPendingDebug.guestId || 'not saved'}
+                </Text>
+                {guestPendingDebug.error && (
+                  <Text style={styles.guestDebugError}>{guestPendingDebug.error}</Text>
+                )}
+              </View>
+            )}
             {(activeTab === 'upcoming' || activeTab === 'pending') && (
               <TouchableWeb
                 style={styles.bookButton}
@@ -4148,6 +4175,32 @@ export default function AppointmentsScreen({ navigation, route }) {
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 32,
+  },
+  guestDebugPanel: {
+    width: '100%',
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: COLORS.primary + '12',
+    borderWidth: 1,
+    borderColor: COLORS.primary + '35',
+    marginBottom: 16,
+  },
+  guestDebugTitle: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+    marginBottom: 4,
+  },
+  guestDebugText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+  },
+  guestDebugError: {
+    fontSize: 11,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.error,
+    marginTop: 4,
   },
   bookButton: {
     borderRadius: 12,

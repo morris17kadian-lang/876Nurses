@@ -108,10 +108,17 @@ export const AppointmentProvider = ({ children }) => {
       const withoutDuplicate = appointmentsToSave.filter((item) =>
         (item?.id || item?.appointmentId) !== appointmentKey
       );
+      const savedAppointments = [...withoutDuplicate, appointment];
       await AsyncStorage.setItem(
         guestPendingStorageKey,
-        JSON.stringify([...withoutDuplicate, appointment])
+        JSON.stringify(savedAppointments)
       );
+      console.log('[GuestPendingDebug] Saved local pending appointment', {
+        id: appointmentKey,
+        status: appointment.status,
+        patientId: appointment.patientId,
+        cacheCount: savedAppointments.length,
+      });
     } catch (error) {
       console.error('Failed to save guest pending appointment:', error);
     }
@@ -691,6 +698,12 @@ export const AppointmentProvider = ({ children }) => {
         setAppointments(updatedAppointments);
         await saveAppointments(updatedAppointments);
         await saveGuestPendingAppointment(newAppointment);
+        console.log('[GuestPendingDebug] Booking completed', {
+          id: newAppointment.id,
+          status: newAppointment.status,
+          patientId: newAppointment.patientId,
+          isGuest: !user,
+        });
 
         // Refresh appointments from backend to get the latest state
         setTimeout(() => {
