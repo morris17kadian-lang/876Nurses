@@ -501,6 +501,22 @@ export const AppointmentProvider = ({ children }) => {
       const resolvedPatientEmail = appointmentData.email || appointmentData.patientEmail || user?.email || '';
       const resolvedPatientPhone = appointmentData.phone || appointmentData.patientPhone || user?.phone || '';
 
+      // Guests have no authenticated user object, so the "My Appointments" screen
+      // can't match bookings back to `user?.id`/`user?.name`. Persist the identity
+      // used for this booking so guest screens can recognize their own requests.
+      if (!user) {
+        try {
+          await AsyncStorage.setItem('@876_guest_identity', JSON.stringify({
+            patientId: resolvedPatientId,
+            name: resolvedPatientName,
+            email: resolvedPatientEmail,
+            phone: resolvedPatientPhone,
+          }));
+        } catch (storageError) {
+          console.error('Failed to persist guest identity:', storageError);
+        }
+      }
+
       const apiData = {
         patientId: resolvedPatientId,
         patientName: resolvedPatientName, // Ensure patient name is sent

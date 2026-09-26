@@ -66,6 +66,33 @@ export default function AppointmentsScreen({ navigation, route }) {
   const [pickerDate, setPickerDate] = useState(new Date());
   const [pickerTime, setPickerTime] = useState(new Date());
 
+  // Guests have no authenticated `user` object, so their own bookings can't be
+  // matched via user?.id/user?.name. Load the identity persisted at booking time
+  // (see AppointmentContext.bookAppointment) so guest screens can find their own requests.
+  const [guestIdentity, setGuestIdentity] = useState(null);
+
+  const loadGuestIdentity = React.useCallback(async () => {
+    if (user) return;
+    try {
+      const raw = await AsyncStorage.getItem('@876_guest_identity');
+      if (raw) {
+        setGuestIdentity(JSON.parse(raw));
+      }
+    } catch (error) {
+      console.error('Failed to load guest identity:', error);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    loadGuestIdentity();
+  }, [loadGuestIdentity]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      loadGuestIdentity();
+    }, [loadGuestIdentity])
+  );
+
   const companyDetails = {
     companyName: '876 Nurses Home Care Services Limited',
     fullName: '876 NURSES HOME CARE SERVICES LIMITED',
@@ -656,8 +683,11 @@ export default function AppointmentsScreen({ navigation, route }) {
       ['PATIENT001', 'patient-001', 'patient001', '1'].forEach(addId);
     }
 
+    addId(guestIdentity?.patientId);
+    addId(guestIdentity?.email);
+
     return ids;
-  }, [patientId, user]);
+  }, [patientId, user, guestIdentity]);
 
   const patientNameCandidates = React.useMemo(() => {
     const names = new Set();
@@ -685,8 +715,10 @@ export default function AppointmentsScreen({ navigation, route }) {
       user.knownAliases.forEach(addName);
     }
 
+    addName(guestIdentity?.name);
+
     return names;
-  }, [user]);
+  }, [user, guestIdentity]);
 
   const patientEmailCandidates = React.useMemo(() => {
     const emails = new Set();
@@ -708,8 +740,10 @@ export default function AppointmentsScreen({ navigation, route }) {
       user.emails.forEach(addEmail);
     }
 
+    addEmail(guestIdentity?.email);
+
     return emails;
-  }, [user]);
+  }, [user, guestIdentity]);
 
   const matchesCurrentPatient = React.useCallback(
     (record) => {
@@ -1367,14 +1401,14 @@ export default function AppointmentsScreen({ navigation, route }) {
     }
   }, [activeTab, selectedAppointment, detailsModalVisible, recurringShiftDetailsModalVisible]);
 
-  // Get patient ID first
-  const patientId = user?.id;
+  // Get patient ID first (fall back to persisted guest identity when there's no authenticated user)
+  const patientId = user?.id || guestIdentity?.patientId;
   
   // Get real appointment data from context
-  const upcomingAppointments = getUpcomingAppointments();
+  const upcomingAppointments = getUpcomingAppointments(patientId);
   // AppointmentContext history can include shift-request items as appointments.
   // We merge in shiftRequests separately, so filter those out here to avoid duplicates.
-  const pastAppointments = (getAppointmentHistory() || []).filter((apt) => !apt?.isShiftRequest);
+  const pastAppointments = (getAppointmentHistory(patientId) || []).filter((apt) => !apt?.isShiftRequest);
   
   // Get pending appointments that need patient action
   const pendingAppointments = React.useMemo(() => {
@@ -1387,12 +1421,16 @@ export default function AppointmentsScreen({ navigation, route }) {
         appointment.userId === patientId ||
         String(appointment.userId) === String(patientId) ||
         (appointment.patientName === user?.name) ||
-        (appointment.patientName && user?.name && appointment.patientName.toLowerCase() === user.name.toLowerCase());
+        (appointment.patientName && user?.name && appointment.patientName.toLowerCase() === user.name.toLowerCase()) ||
+        (guestIdentity?.email && appointment.patientEmail && appointment.patientEmail.toLowerCase() === guestIdentity.email.toLowerCase()) ||
+        (guestIdentity?.email && appointment.clientEmail && appointment.clientEmail.toLowerCase() === guestIdentity.email.toLowerCase()) ||
+        (guestIdentity?.name && appointment.patientName && appointment.patientName.toLowerCase() === guestIdentity.name.toLowerCase());
       
       // Show both pending (no nurse assigned) and assigned (nurse assigned but not accepted) appointments
       return (appointment.status === 'pending' || appointment.status === 'assigned') && matchesPatient;
     });
-  }, [appointments, patientId, user?.name, user?.role]);
+  }, [appointments, patientId, user?.name, user?.role, guestIdentity]);
+
   
   const approvedShifts = React.useMemo(() => {
     const now = new Date();
