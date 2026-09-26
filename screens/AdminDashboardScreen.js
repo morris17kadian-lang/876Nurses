@@ -511,6 +511,11 @@ const checkIsAcceptedCoverageForNurse = (coverageRequests, nurseId, nurseCode) =
 
 export default function AdminDashboardScreen({ navigation, route }) {
   const { user } = useAuth();
+  const normalizedUserRole = String(user?.role || user?.type || '').trim().toLowerCase();
+  const isAdminUser =
+    normalizedUserRole === 'admin' ||
+    normalizedUserRole === 'administrator' ||
+    normalizedUserRole.startsWith('admin');
   const { unreadCount, sendNotificationToUser, refreshNotifications } = useNotifications();
   const insets = useSafeAreaInsets();
   const { 
@@ -6003,7 +6008,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
             
             {selectedAppointmentDetails && (
               <>
-                {user?.role === 'admin' && (
+                {isAdminUser && (
                   <Text style={{ fontSize: 11, color: '#b45309', paddingHorizontal: 16, paddingTop: 4 }}>
                     DEBUG role={String(user?.role)} · status={String(selectedAppointmentDetails.status)} · isRecurring={String(selectedAppointmentDetails.isRecurring)} · isShiftRequest={String(selectedAppointmentDetails.isShiftRequest)}
                   </Text>
@@ -6934,7 +6939,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                             <Text style={styles.sectionTitle}>Emergency Backup Nurses</Text>
                           </View>
-                          {user?.role === 'admin' && (
+                          {isAdminUser && (
                             <TouchableWeb
                               onPress={() => openBackupNurseModal(selectedAppointmentDetails)}
                               activeOpacity={0.7}
@@ -7376,7 +7381,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                 )}
 
                 {/* Action Buttons for Pending Appointments (not recurring - nurse handles those) */}
-                {user?.role === 'admin' &&
+                {isAdminUser &&
                   ['pending', 'requested', 'awaiting', 'unassigned'].includes(
                     String(
                       selectedAppointmentDetails.status ||
@@ -7408,7 +7413,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                             style: 'destructive',
                             onPress: async () => {
                               try {
-                                await cancelAppointment(selectedAppointmentDetails.id);
+                                await cancelAppointment(selectedAppointmentDetails);
                                 setAppointmentDetailsModalVisible(false);
                                 Alert.alert('Success', 'Appointment denied');
                               } catch (error) {
@@ -8687,7 +8692,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                     <View style={styles.detailsSection}>
                       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                         <Text style={styles.sectionTitle}>Emergency Backup Nurses</Text>
-                        {user?.role === 'admin' && (
+                        {isAdminUser && (
                           <TouchableWeb
                             onPress={() => {
                               setShiftRequestModalVisible(false);
@@ -9757,7 +9762,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                 </ScrollView>
                 
                 {/* Action buttons for shift requests */}
-                {user?.role === 'admin' && selectedShiftRequest?.status === 'pending' && (
+                {isAdminUser && selectedShiftRequest?.status === 'pending' && (
                 <View style={styles.modalFooter}>
                       <TouchableWeb
                         style={styles.modalDenyButton}

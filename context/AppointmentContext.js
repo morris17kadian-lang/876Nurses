@@ -1350,19 +1350,85 @@ export const AppointmentProvider = ({ children }) => {
   };
 
   // Cancel appointment
-  const cancelAppointment = async (appointmentId, reason = '') => {
+  const cancelAppointment = async (appointmentInput, reason = '') => {
     const isGuest = !user;
+
+    const inputIsObject = appointmentInput && typeof appointmentInput === 'object';
+    const inputObject = inputIsObject ? appointmentInput : null;
+    const rawInputId = inputIsObject
+      ? (appointmentInput.id || appointmentInput._id || appointmentInput.appointmentId || appointmentInput.documentId || null)
+      : appointmentInput;
+
+    const normalizedInputId = rawInputId === null || rawInputId === undefined
+      ? null
+      : String(rawInputId).trim();
+
+    const matchesByAnyKey = (apt, keys) => {
+      if (!apt || !keys || keys.size === 0) return false;
+      const aptKeys = [
+        apt.id,
+        apt._id,
+        apt.appointmentId,
+        apt.documentId,
+        apt.requestId,
+        apt.relatedAppointmentId,
+      ]
+        .filter((v) => v !== null && v !== undefined)
+        .map((v) => String(v).trim())
+        .filter(Boolean);
+      return aptKeys.some((key) => keys.has(key));
+    };
+
+    const knownInputKeys = new Set(
+      [
+        normalizedInputId,
+        inputObject?.id,
+        inputObject?._id,
+        inputObject?.appointmentId,
+        inputObject?.documentId,
+        inputObject?.requestId,
+        inputObject?.relatedAppointmentId,
+      ]
+        .filter((v) => v !== null && v !== undefined)
+        .map((v) => String(v).trim())
+        .filter(Boolean)
+    );
+
+    const matchedAppointment =
+      appointments.find((apt) => matchesByAnyKey(apt, knownInputKeys)) ||
+      inputObject ||
+      null;
+
+    const knownAppointmentKeys = new Set(
+      [
+        ...knownInputKeys,
+        matchedAppointment?.id,
+        matchedAppointment?._id,
+        matchedAppointment?.appointmentId,
+        matchedAppointment?.documentId,
+        matchedAppointment?.requestId,
+        matchedAppointment?.relatedAppointmentId,
+      ]
+        .filter((v) => v !== null && v !== undefined)
+        .map((v) => String(v).trim())
+        .filter(Boolean)
+    );
+
+    const backendAppointmentId = Array.from(knownAppointmentKeys)[0] || null;
+    if (!backendAppointmentId) {
+      throw new Error('Missing appointment id');
+    }
+
     let apiSucceeded = false;
     let apiError = null;
 
     try {
-      // Call backend to update status
-      const response = await ApiService.makeRequest(`/appointments/${appointmentId}`, {
+      const response = await ApiService.makeRequest(`/appointments/${backendAppointmentId}`, {
         method: 'PUT',
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           status: 'cancelled',
-          notes: reason
-        })
+          notes: reason,
+        }),
       });
       apiSucceeded = Boolean(response?.success);
       if (!apiSucceeded) {
@@ -1370,6 +1436,17 @@ export const AppointmentProvider = ({ children }) => {
       }
     } catch (error) {
       apiError = error?.message || String(error);
+    }
+
+    // Secondary attempt with the direct appointment helper (same Firestore target,
+    // different call path) to reduce false negatives caused by routing mismatches.
+    if (!apiSucceeded) {
+      try {
+        await ApiService.cancelAppointment(backendAppointmentId);
+        apiSucceeded = true;
+      } catch (fallbackError) {
+        apiError = fallbackError?.message || apiError;
+      }
     }
 
     // Guests are unauthenticated, and the appointment may have already been
@@ -1385,14 +1462,15 @@ export const AppointmentProvider = ({ children }) => {
       console.warn('⚠️ Guest cancel API call failed (permission-denied or already removed server-side), cancelling locally:', apiError);
     }
 
-    const updatedAppointments = appointments.map(apt => 
-      apt.id === appointmentId 
-        ? { 
-            ...apt, 
+    const nowIso = new Date().toISOString();
+    const updatedAppointments = appointments.map((apt) =>
+      matchesByAnyKey(apt, knownAppointmentKeys)
+        ? {
+            ...apt,
             status: 'cancelled',
-            cancelledAt: new Date().toISOString(),
+            cancelledAt: nowIso,
             cancellationReason: reason,
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
           }
         : apt
     );
@@ -1401,15 +1479,27 @@ export const AppointmentProvider = ({ children }) => {
     await saveAppointments(updatedAppointments);
 
     if (isGuest) {
-      // Remove the stale dedicated-cache entry, otherwise it will keep
-      // resurrecting this appointment as "pending" when merged on screen.
-      await removeGuestPendingAppointment(appointmentId);
+      // Remove stale dedicated-cache entries by any known appointment key,
+      // otherwise they can resurrect as "pending" on later refreshes.
+      await Promise.allSettled(
+        Array.from(knownAppointmentKeys).map((key) => removeGuestPendingAppointment(key))
+      );
     }
 
-    const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+    const appointment =
+      updatedAppointments.find((apt) => matchesByAnyKey(apt, knownAppointmentKeys)) ||
+      matchedAppointment ||
+      null;
     if (!appointment) {
       return null;
     }
+
+    const appointmentDateForMessage =
+      appointment.appointmentDate ||
+      appointment.date ||
+      appointment.scheduledDate ||
+      appointment.startDate ||
+      null;
 
     // Send notifications (non-blocking)
     Promise.all([
@@ -1417,10 +1507,10 @@ export const AppointmentProvider = ({ children }) => {
         appointment.patientId,
         'patient',
         'Appointment Cancelled',
-        `Your appointment on ${new Date(appointment.appointmentDate).toLocaleDateString()} has been cancelled${reason ? ': ' + reason : ''}`,
+        `Your appointment on ${appointmentDateForMessage ? new Date(appointmentDateForMessage).toLocaleDateString() : 'the scheduled date'} has been cancelled${reason ? ': ' + reason : ''}`,
         {
-          appointmentId,
-          type: 'appointment_cancelled'
+          appointmentId: backendAppointmentId,
+          type: 'appointment_cancelled',
         }
       ),
       sendNotificationToUser(
@@ -1429,11 +1519,11 @@ export const AppointmentProvider = ({ children }) => {
         'Appointment Cancelled',
         `Appointment with ${appointment.patientName} has been cancelled${reason ? ': ' + reason : ''}`,
         {
-          appointmentId,
-          type: 'appointment_cancelled'
+          appointmentId: backendAppointmentId,
+          type: 'appointment_cancelled',
         }
-      )
-    ]).catch(err => console.error('Notification error:', err));
+      ),
+    ]).catch((err) => console.error('Notification error:', err));
 
     return appointment;
   };

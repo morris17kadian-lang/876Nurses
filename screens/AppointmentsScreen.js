@@ -1977,7 +1977,7 @@ export default function AppointmentsScreen({ navigation, route }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              await cancelAppointment(appointment.id, 'Cancelled by user');
+              await cancelAppointment(appointment, 'Cancelled by user');
               // Guest cancellations are reflected in a separate AsyncStorage cache
               // (guestCachedAppointments) that only this screen owns; refresh it now
               // so the cancelled appointment disappears from Pending immediately
@@ -3482,7 +3482,7 @@ export default function AppointmentsScreen({ navigation, route }) {
                                 style: 'destructive',
                                 onPress: async () => {
                                   try {
-                                    await cancelAppointment(selectedAppointment.id);
+                                    await cancelAppointment(selectedAppointment);
                                     
                                     // Send notification to admin about cancellation
                                     try {
