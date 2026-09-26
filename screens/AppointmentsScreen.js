@@ -76,16 +76,18 @@ export default function AppointmentsScreen({ navigation, route }) {
   const loadGuestIdentity = React.useCallback(async () => {
     if (user) return;
     try {
-      const [raw, rawAppointments, rawPendingAppointments] = await Promise.all([
+      const [raw, rawAppointments, rawPendingAppointments, rawDebugLog] = await Promise.all([
         AsyncStorage.getItem('@876_guest_identity'),
         AsyncStorage.getItem('@876_appointments_guest'),
         AsyncStorage.getItem('@876_guest_pending_appointments'),
+        AsyncStorage.getItem('@876_guest_debug_log'),
       ]);
       if (raw) {
         setGuestIdentity(JSON.parse(raw));
       }
       const cachedAppointments = rawAppointments ? JSON.parse(rawAppointments) : [];
       const pendingAppointments = rawPendingAppointments ? JSON.parse(rawPendingAppointments) : [];
+      const parsedDebugLog = rawDebugLog ? JSON.parse(rawDebugLog) : null;
       const allCachedAppointments = [
         ...(Array.isArray(cachedAppointments) ? cachedAppointments : []),
         ...(Array.isArray(pendingAppointments) ? pendingAppointments : []),
@@ -95,11 +97,14 @@ export default function AppointmentsScreen({ navigation, route }) {
         sharedCacheCount: Array.isArray(cachedAppointments) ? cachedAppointments.length : 0,
         dedicatedPendingCount: Array.isArray(pendingAppointments) ? pendingAppointments.length : 0,
         guestId: raw ? JSON.parse(raw)?.patientId || null : null,
+        lastSaveLog: parsedDebugLog,
+        loadedAt: new Date().toISOString(),
       });
       console.log('[GuestPendingDebug] Loaded guest appointment cache', {
         sharedCacheCount: Array.isArray(cachedAppointments) ? cachedAppointments.length : 0,
         dedicatedPendingCount: Array.isArray(pendingAppointments) ? pendingAppointments.length : 0,
         guestId: raw ? JSON.parse(raw)?.patientId || null : null,
+        lastSaveLog: parsedDebugLog,
       });
     } catch (error) {
       console.error('Failed to load guest identity:', error);
@@ -2315,7 +2320,12 @@ export default function AppointmentsScreen({ navigation, route }) {
 
       {!user && (
         <View style={styles.guestDebugPanel}>
-          <Text style={styles.guestDebugTitle}>Guest booking diagnostics</Text>
+          <View style={styles.guestDebugHeaderRow}>
+            <Text style={styles.guestDebugTitle}>Guest booking diagnostics</Text>
+            <TouchableWeb onPress={loadGuestIdentity} activeOpacity={0.7}>
+              <Text style={styles.guestDebugRefresh}>Refresh</Text>
+            </TouchableWeb>
+          </View>
           {guestPendingDebug ? (
             <>
               <Text style={styles.guestDebugText}>
@@ -2326,6 +2336,11 @@ export default function AppointmentsScreen({ navigation, route }) {
               </Text>
               <Text style={styles.guestDebugText}>
                 Pending shown: {pendingAppointments.length} · Active tab: {activeTab}
+              </Text>
+              <Text style={styles.guestDebugText}>
+                Last save: {guestPendingDebug.lastSaveLog
+                  ? `${guestPendingDebug.lastSaveLog.result}${guestPendingDebug.lastSaveLog.message ? ` (${guestPendingDebug.lastSaveLog.message})` : ''} at ${guestPendingDebug.lastSaveLog.timestamp}`
+                  : 'no save recorded yet'}
               </Text>
               {guestPendingDebug.error && (
                 <Text style={styles.guestDebugError}>{guestPendingDebug.error}</Text>
@@ -4194,6 +4209,18 @@ export default function AppointmentsScreen({ navigation, route }) {
     borderColor: COLORS.primary + '35',
     marginHorizontal: 20,
     marginTop: 12,
+  },
+  guestDebugHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  guestDebugRefresh: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+    textDecorationLine: 'underline',
   },
   guestDebugTitle: {
     fontSize: 12,

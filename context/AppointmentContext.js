@@ -22,6 +22,7 @@ export const AppointmentProvider = ({ children }) => {
   const { createAppointmentNotification, createSystemNotification, sendNotificationToUser, scheduleAppointmentReminder } = useNotifications();
   const { nurses: nursesFromContext, incrementAssignedClients } = useNurses();
   const guestPendingStorageKey = '@876_guest_pending_appointments';
+  const guestDebugLogKey = '@876_guest_debug_log';
   
   const [appointments, setAppointments] = useState([]);
   const [nurses, setNurses] = useState([]);
@@ -97,8 +98,26 @@ export const AppointmentProvider = ({ children }) => {
     }
   };
 
+  const writeGuestDebugLog = async (entry) => {
+    try {
+      await AsyncStorage.setItem(guestDebugLogKey, JSON.stringify({
+        ...entry,
+        timestamp: new Date().toISOString(),
+      }));
+    } catch (logError) {
+      // Best-effort only; never let debug logging break booking.
+    }
+  };
+
   const saveGuestPendingAppointment = async (appointment) => {
-    if (user || !appointment) return;
+    if (user || !appointment) {
+      await writeGuestDebugLog({
+        step: 'save',
+        result: 'skipped',
+        reason: user ? 'user is authenticated' : 'no appointment provided',
+      });
+      return;
+    }
 
     try {
       const raw = await AsyncStorage.getItem(guestPendingStorageKey);
@@ -119,8 +138,19 @@ export const AppointmentProvider = ({ children }) => {
         patientId: appointment.patientId,
         cacheCount: savedAppointments.length,
       });
+      await writeGuestDebugLog({
+        step: 'save',
+        result: 'success',
+        appointmentId: appointmentKey,
+        cacheCount: savedAppointments.length,
+      });
     } catch (error) {
       console.error('Failed to save guest pending appointment:', error);
+      await writeGuestDebugLog({
+        step: 'save',
+        result: 'error',
+        message: error?.message || String(error),
+      });
     }
   };
 
