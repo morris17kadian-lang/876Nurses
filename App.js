@@ -3,6 +3,7 @@ import 'react-native-gesture-handler';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, LogBox, StyleSheet, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import * as Updates from 'expo-updates';
 import ErrorBoundary from './components/ErrorBoundary';
 import { migrateAsyncStorageCareTo876 } from './utils/migrateAsyncStorageCareTo876';
 import { COLORS, ENABLE_DEBUG_LOGS } from './constants';
@@ -41,6 +42,33 @@ export default function App() {
   const [storageReady, setStorageReady] = useState(false);
   const [startupMessage, setStartupMessage] = useState('Preparing 876Nurses...');
   const [startupError, setStartupError] = useState('');
+
+  // Eagerly apply any newer published OTA update on this same launch, instead of
+  // relying on expo-updates' default behavior of only applying a downloaded update
+  // on the NEXT cold launch. Without this, every fix requires force-quitting the
+  // app twice before it's visible. Bounded by its own timeout so a slow/offline
+  // network never blocks startup — the app just continues on the cached bundle.
+  useEffect(() => {
+    if (__DEV__ || !Updates.isEnabled) return;
+    let cancelled = false;
+
+    const applyLatestUpdate = async () => {
+      try {
+        const result = await Updates.checkForUpdateAsync();
+        if (cancelled || !result.isAvailable) return;
+        await Updates.fetchUpdateAsync();
+        if (cancelled) return;
+        await Updates.reloadAsync();
+      } catch (error) {
+        console.error('OTA update check failed:', error);
+      }
+    };
+
+    const timeout = new Promise((resolve) => setTimeout(resolve, 3500));
+    Promise.race([applyLatestUpdate(), timeout]);
+
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
