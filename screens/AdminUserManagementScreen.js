@@ -15,6 +15,7 @@ export default function AdminUserManagementScreen({ navigation, route }) {
   const [activeFilter, setActiveFilter] = useState('clients');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+  const [debugInfo, setDebugInfo] = useState(null);
   const addStaffFunctionRef = useRef(null);
   const searchInputRef = useRef(null);
   const handleCloseSearch = () => {
@@ -29,6 +30,10 @@ export default function AdminUserManagementScreen({ navigation, route }) {
   // Function to handle setting the add staff function
   const handleSetAddStaffFunction = (addFunction) => {
     addStaffFunctionRef.current = addFunction;
+  };
+
+  const handleStaffDebugUpdate = (info) => {
+    setDebugInfo(info || null);
   };
 
   useEffect(() => {
@@ -169,6 +174,16 @@ export default function AdminUserManagementScreen({ navigation, route }) {
             </TouchableWeb>
           </View>
         )}
+
+        {activeFilter === 'staff' && debugInfo && (
+          <View style={styles.debugCard}>
+            <Text style={styles.debugTitle}>Staff Debug</Text>
+            <Text style={styles.debugText}>Loaded admins: {debugInfo.adminCount ?? 0}</Text>
+            <Text style={styles.debugText}>Admin codes: {debugInfo.adminCodes?.join(', ') || 'none'}</Text>
+            <Text style={styles.debugText}>Visible staff rows: {debugInfo.visibleCount ?? 0}</Text>
+            <Text style={styles.debugText}>Filter: {debugInfo.selectedCard || 'all'}</Text>
+          </View>
+        )}
         
         {/* Filter Pills */}
         <FilterPills />
@@ -189,6 +204,7 @@ export default function AdminUserManagementScreen({ navigation, route }) {
             route={route}
             isEmbedded={true}
             onAddPress={handleSetAddStaffFunction}
+            onDebugUpdate={handleStaffDebugUpdate}
             searchQuery={searchQuery}
           />
         )}
@@ -260,6 +276,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 8,
+  },
+  debugCard: {
+    marginHorizontal: SPACING.md,
+    marginTop: SPACING.sm,
+    marginBottom: SPACING.sm,
+    padding: SPACING.md,
+    borderRadius: 14,
+    backgroundColor: 'rgba(139,0,0,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(139,0,0,0.25)',
+  },
+  debugTitle: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+    marginBottom: 4,
+  },
+  debugText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 18,
   },
   filterPill: {
     flex: 1,

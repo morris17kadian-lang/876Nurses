@@ -15,7 +15,7 @@ import FirebaseService from '../services/FirebaseService';
 import { clearAllAdminData, checkCurrentData } from '../utils/clearData';
 import BankAutocomplete from '../components/BankAutocomplete';
 
-export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = false, onAddPress, searchQuery = '' }) {
+export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = false, onAddPress, onDebugUpdate, searchQuery = '' }) {
   const { createNurseAccount, user } = useAuth();
   const { nurses, addNurse, updateNurse, updateNurseStatus, deleteNurse, getNursesByStatus } = useNurses();
   const insets = useSafeAreaInsets();
@@ -211,6 +211,16 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
       loadAdminStaff();
     }, [loadAdminStaff])
   );
+
+  useEffect(() => {
+    if (typeof onDebugUpdate !== 'function') return;
+    onDebugUpdate({
+      adminCount: adminStaff.length,
+      adminCodes: adminStaff.map((admin) => admin.code).filter(Boolean),
+      visibleCount: getDisplayedNurses().length,
+      selectedCard: selectedCard || 'all',
+    });
+  }, [adminStaff, onDebugUpdate, selectedCard, searchQuery, nurses]);
 
   // Auto-generate the next sequential code based on role
   const getNextCode = () => {
