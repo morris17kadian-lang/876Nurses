@@ -83,7 +83,15 @@ service cloud.firestore {
     // Appointments collection
     match /appointments/{appointmentId} {
       allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
+      // Authenticated users can always create. Unauthenticated (guest) bookings
+      // are allowed too, but must be a plain pending request with no nurse
+      // assignment, so guests can't escalate privileges via the create payload.
+      allow create: if isAuthenticated() ||
+        (
+          request.resource.data.status == 'pending' &&
+          !('nurseId' in request.resource.data) &&
+          !('assignedNurseId' in request.resource.data)
+        );
       // Allow nurses and admins to update appointments (for coverage requests, status changes, etc.)
       // App layer handles authorization for specific operations
       allow update: if isAuthenticated();
