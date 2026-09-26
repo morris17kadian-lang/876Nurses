@@ -75,15 +75,20 @@ export default function AppointmentsScreen({ navigation, route }) {
   const loadGuestIdentity = React.useCallback(async () => {
     if (user) return;
     try {
-      const [raw, rawAppointments] = await Promise.all([
+      const [raw, rawAppointments, rawPendingAppointments] = await Promise.all([
         AsyncStorage.getItem('@876_guest_identity'),
         AsyncStorage.getItem('@876_appointments_guest'),
+        AsyncStorage.getItem('@876_guest_pending_appointments'),
       ]);
       if (raw) {
         setGuestIdentity(JSON.parse(raw));
       }
-      const parsedAppointments = rawAppointments ? JSON.parse(rawAppointments) : [];
-      setGuestCachedAppointments(Array.isArray(parsedAppointments) ? parsedAppointments : []);
+      const cachedAppointments = rawAppointments ? JSON.parse(rawAppointments) : [];
+      const pendingAppointments = rawPendingAppointments ? JSON.parse(rawPendingAppointments) : [];
+      setGuestCachedAppointments([
+        ...(Array.isArray(cachedAppointments) ? cachedAppointments : []),
+        ...(Array.isArray(pendingAppointments) ? pendingAppointments : []),
+      ]);
     } catch (error) {
       console.error('Failed to load guest identity:', error);
       setGuestCachedAppointments([]);
@@ -1433,7 +1438,13 @@ export default function AppointmentsScreen({ navigation, route }) {
     });
 
     return Array.from(appointmentMap.values()).filter(appointment => {
+      const appointmentKey = appointment.id || appointment.appointmentId || `${appointment.patientId}-${appointment.date}-${appointment.time}`;
+      const isGuestCachedAppointment = !user && guestCachedAppointments.some((cached) => {
+        const cachedKey = cached?.id || cached?.appointmentId || `${cached?.patientId}-${cached?.date}-${cached?.time}`;
+        return cachedKey === appointmentKey;
+      });
       const matchesPatient = 
+        isGuestCachedAppointment ||
         appointment.patientId === patientId ||
         String(appointment.patientId) === String(patientId) ||
         appointment.clientId === patientId ||

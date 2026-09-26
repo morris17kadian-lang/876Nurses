@@ -21,6 +21,7 @@ export const AppointmentProvider = ({ children }) => {
   const { user } = useAuth();
   const { createAppointmentNotification, createSystemNotification, sendNotificationToUser, scheduleAppointmentReminder } = useNotifications();
   const { nurses: nursesFromContext, incrementAssignedClients } = useNurses();
+  const guestPendingStorageKey = '@876_guest_pending_appointments';
   
   const [appointments, setAppointments] = useState([]);
   const [nurses, setNurses] = useState([]);
@@ -93,6 +94,26 @@ export const AppointmentProvider = ({ children }) => {
       await AsyncStorage.setItem(getNursesStorageKey(), JSON.stringify(updatedNurses));
     } catch (error) {
       console.error('Failed to save nurses:', error);
+    }
+  };
+
+  const saveGuestPendingAppointment = async (appointment) => {
+    if (user || !appointment) return;
+
+    try {
+      const raw = await AsyncStorage.getItem(guestPendingStorageKey);
+      const existing = raw ? JSON.parse(raw) : [];
+      const appointmentsToSave = Array.isArray(existing) ? existing : [];
+      const appointmentKey = appointment.id || appointment.appointmentId;
+      const withoutDuplicate = appointmentsToSave.filter((item) =>
+        (item?.id || item?.appointmentId) !== appointmentKey
+      );
+      await AsyncStorage.setItem(
+        guestPendingStorageKey,
+        JSON.stringify([...withoutDuplicate, appointment])
+      );
+    } catch (error) {
+      console.error('Failed to save guest pending appointment:', error);
     }
   };
 
@@ -669,6 +690,7 @@ export const AppointmentProvider = ({ children }) => {
         const updatedAppointments = [...appointments, newAppointment];
         setAppointments(updatedAppointments);
         await saveAppointments(updatedAppointments);
+        await saveGuestPendingAppointment(newAppointment);
 
         // Refresh appointments from backend to get the latest state
         setTimeout(() => {
@@ -710,6 +732,7 @@ export const AppointmentProvider = ({ children }) => {
 
       setAppointments(updatedAppointments);
       await saveAppointments(updatedAppointments);
+      await saveGuestPendingAppointment(newAppointment);
 
       // Try to send notification to admin
       try {
