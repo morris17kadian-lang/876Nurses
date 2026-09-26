@@ -70,16 +70,23 @@ export default function AppointmentsScreen({ navigation, route }) {
   // matched via user?.id/user?.name. Load the identity persisted at booking time
   // (see AppointmentContext.bookAppointment) so guest screens can find their own requests.
   const [guestIdentity, setGuestIdentity] = useState(null);
+  const [guestCachedAppointments, setGuestCachedAppointments] = useState([]);
 
   const loadGuestIdentity = React.useCallback(async () => {
     if (user) return;
     try {
-      const raw = await AsyncStorage.getItem('@876_guest_identity');
+      const [raw, rawAppointments] = await Promise.all([
+        AsyncStorage.getItem('@876_guest_identity'),
+        AsyncStorage.getItem('@876_appointments_guest'),
+      ]);
       if (raw) {
         setGuestIdentity(JSON.parse(raw));
       }
+      const parsedAppointments = rawAppointments ? JSON.parse(rawAppointments) : [];
+      setGuestCachedAppointments(Array.isArray(parsedAppointments) ? parsedAppointments : []);
     } catch (error) {
       console.error('Failed to load guest identity:', error);
+      setGuestCachedAppointments([]);
     }
   }, [user]);
 
@@ -92,6 +99,12 @@ export default function AppointmentsScreen({ navigation, route }) {
       loadGuestIdentity();
     }, [loadGuestIdentity])
   );
+
+  useEffect(() => {
+    if (route.params?.appointmentTab === 'pending') {
+      setActiveTab('pending');
+    }
+  }, [route.params?.appointmentTab]);
 
   const companyDetails = {
     companyName: '876 Nurses Home Care Services Limited',
@@ -1412,7 +1425,14 @@ export default function AppointmentsScreen({ navigation, route }) {
   
   // Get pending appointments that need patient action
   const pendingAppointments = React.useMemo(() => {
-    return appointments.filter(appointment => {
+    const appointmentMap = new Map();
+    [...appointments, ...guestCachedAppointments].forEach((appointment) => {
+      if (!appointment) return;
+      const key = appointment.id || appointment.appointmentId || `${appointment.patientId}-${appointment.date}-${appointment.time}`;
+      appointmentMap.set(key, appointment);
+    });
+
+    return Array.from(appointmentMap.values()).filter(appointment => {
       const matchesPatient = 
         appointment.patientId === patientId ||
         String(appointment.patientId) === String(patientId) ||
@@ -1429,7 +1449,7 @@ export default function AppointmentsScreen({ navigation, route }) {
       // Show both pending (no nurse assigned) and assigned (nurse assigned but not accepted) appointments
       return (appointment.status === 'pending' || appointment.status === 'assigned') && matchesPatient;
     });
-  }, [appointments, patientId, user?.name, user?.role, guestIdentity]);
+  }, [appointments, guestCachedAppointments, patientId, user?.name, user?.role, guestIdentity]);
 
   
   const approvedShifts = React.useMemo(() => {

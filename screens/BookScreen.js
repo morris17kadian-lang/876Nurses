@@ -631,12 +631,21 @@ export default function BookScreen({ navigation, route }) {
     };
 
     try {
-      await bookAppointment(appointmentData);
+      const newAppointment = await bookAppointment(appointmentData);
       
       Alert.alert(
         'Success',
         'Your appointment has been booked successfully! (Payment temporarily disabled for testing)',
-        [{ text: 'OK', onPress: () => resetForm() }]
+        [{
+          text: 'OK',
+          onPress: () => {
+            resetForm();
+            navigation.navigate('Appointments', {
+              appointmentTab: 'pending',
+              appointmentId: newAppointment?.id,
+            });
+          },
+        }]
       );
     } catch (error) {
       console.error('Error booking appointment:', error);
