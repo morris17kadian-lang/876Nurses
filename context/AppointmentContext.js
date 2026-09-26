@@ -552,6 +552,65 @@ export const AppointmentProvider = ({ children }) => {
     return result;
   };
 
+  // Shared fallback used whenever the API call either throws or returns
+  // {success:false}. Ensures a booking always persists locally (so guests still
+  // see it under Pending) and is always logged, instead of silently vanishing.
+  const saveLocalFallbackAppointment = async (appointmentData, reason) => {
+    const resolvedPatientId = user?.id || user?.uid || appointmentData?.patientId || appointmentData?.email || `guest_${Date.now()}`;
+    const resolvedPatientName = appointmentData.patientName || appointmentData.name || user?.fullName || user?.name || 'Guest Client';
+    const resolvedPatientEmail = appointmentData.email || appointmentData.patientEmail || user?.email || 'patient@care.com';
+    const resolvedPatientPhone = appointmentData.phone || appointmentData.patientPhone || user?.phone || '';
+
+    const newAppointment = {
+      id: `apt_${Date.now()}`,
+      patientId: resolvedPatientId,
+      patientName: resolvedPatientName,
+      patientEmail: resolvedPatientEmail,
+      patientPhone: resolvedPatientPhone,
+      service: appointmentData.service,
+      date: appointmentData.date,
+      time: appointmentData.time,
+      address: appointmentData.address,
+      notes: appointmentData.notes || '',
+      patientAlerts: appointmentData.patientAlerts || null,
+      status: 'pending',
+      nurseId: null,
+      nurseName: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedAppointments = [...appointments, newAppointment];
+
+    setAppointments(updatedAppointments);
+    await saveAppointments(updatedAppointments);
+    await saveGuestPendingAppointment(newAppointment);
+    console.log('[GuestPendingDebug] Local fallback booking saved', {
+      id: newAppointment.id,
+      reason,
+      isGuest: !user,
+    });
+
+    // Try to send notification to admin
+    try {
+      await sendNotificationToUser(
+        'admin-001',
+        'admin',
+        'New Appointment Request',
+        `${newAppointment.patientName} has requested a ${newAppointment.service} appointment for ${newAppointment.date}`,
+        {
+          appointmentId: newAppointment.id,
+          patientId: newAppointment.patientId,
+          type: 'appointment_booked'
+        }
+      );
+    } catch (notifError) {
+      console.error('Failed to send notification:', notifError);
+    }
+
+    return newAppointment;
+  };
+
   const bookAppointment = async (appointmentData) => {
     try {
       // Try to create appointment via API first
@@ -743,58 +802,27 @@ export const AppointmentProvider = ({ children }) => {
 
         return newAppointment;
       }
+
+      // response.success was falsy but no exception was thrown (ApiService.makeRequest
+      // swallows errors internally and returns {success:false} instead of throwing).
+      // Without this branch, the function would silently return undefined here with
+      // zero persistence and zero logging. Fall back to the same local-save path used
+      // in the catch block below.
+      console.error('⚠️ Booking API returned success:false, saving locally:', response?.error);
+      await writeGuestDebugLog({
+        step: 'save',
+        result: 'error',
+        message: response?.error || 'Booking API returned success:false',
+      });
+      return await saveLocalFallbackAppointment(appointmentData, 'api-returned-failure');
     } catch (error) {
       console.error('⚠️ API call failed, saving locally:', error.message);
-      
-      // Fallback to local storage if API fails
-      const resolvedPatientId = user?.id || user?.uid || appointmentData?.patientId || appointmentData?.email || `guest_${Date.now()}`;
-      const resolvedPatientName = appointmentData.patientName || appointmentData.name || user?.fullName || user?.name || 'Guest Client';
-      const resolvedPatientEmail = appointmentData.email || appointmentData.patientEmail || user?.email || 'patient@care.com';
-      const resolvedPatientPhone = appointmentData.phone || appointmentData.patientPhone || user?.phone || '';
-
-      const newAppointment = {
-        id: `apt_${Date.now()}`,
-        patientId: resolvedPatientId,
-        patientName: resolvedPatientName,
-        patientEmail: resolvedPatientEmail,
-        patientPhone: resolvedPatientPhone,
-        service: appointmentData.service,
-        date: appointmentData.date,
-        time: appointmentData.time,
-        address: appointmentData.address,
-        notes: appointmentData.notes || '',
-        patientAlerts: appointmentData.patientAlerts || null,
-        status: 'pending',
-        nurseId: null,
-        nurseName: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      const updatedAppointments = [...appointments, newAppointment];
-
-      setAppointments(updatedAppointments);
-      await saveAppointments(updatedAppointments);
-      await saveGuestPendingAppointment(newAppointment);
-
-      // Try to send notification to admin
-      try {
-        await sendNotificationToUser(
-          'admin-001',
-          'admin',
-          'New Appointment Request',
-          `${newAppointment.patientName} has requested a ${newAppointment.service} appointment for ${newAppointment.date}`,
-          {
-            appointmentId: newAppointment.id,
-            patientId: newAppointment.patientId,
-            type: 'appointment_booked'
-          }
-        );
-      } catch (notifError) {
-        console.error('Failed to send notification:', notifError);
-      }
-
-      return newAppointment;
+      await writeGuestDebugLog({
+        step: 'save',
+        result: 'error',
+        message: error?.message || 'Booking API threw an exception',
+      });
+      return await saveLocalFallbackAppointment(appointmentData, 'api-threw-exception');
     }
   };
 
