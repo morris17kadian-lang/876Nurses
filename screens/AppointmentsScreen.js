@@ -2313,6 +2313,30 @@ export default function AppointmentsScreen({ navigation, route }) {
         </TouchableWeb>
       </View>
 
+      {!user && (
+        <View style={styles.guestDebugPanel}>
+          <Text style={styles.guestDebugTitle}>Guest booking diagnostics</Text>
+          {guestPendingDebug ? (
+            <>
+              <Text style={styles.guestDebugText}>
+                Local Pending cache: {guestPendingDebug.dedicatedPendingCount ?? 0} · Shared cache: {guestPendingDebug.sharedCacheCount ?? 0}
+              </Text>
+              <Text style={styles.guestDebugText}>
+                Guest ID: {guestPendingDebug.guestId || 'not saved'}
+              </Text>
+              <Text style={styles.guestDebugText}>
+                Pending shown: {pendingAppointments.length} · Active tab: {activeTab}
+              </Text>
+              {guestPendingDebug.error && (
+                <Text style={styles.guestDebugError}>{guestPendingDebug.error}</Text>
+              )}
+            </>
+          ) : (
+            <Text style={styles.guestDebugText}>Loading guest cache…</Text>
+          )}
+        </View>
+      )}
+
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {displayedAppointments.length === 0 ? (
           <View style={styles.emptyState}>
@@ -2327,20 +2351,6 @@ export default function AppointmentsScreen({ navigation, route }) {
                 ? 'No appointments waiting for your confirmation'
                 : 'Your completed appointments will appear here'}
             </Text>
-            {!user && activeTab === 'pending' && guestPendingDebug && (
-              <View style={styles.guestDebugPanel}>
-                <Text style={styles.guestDebugTitle}>Guest booking diagnostics</Text>
-                <Text style={styles.guestDebugText}>
-                  Local Pending cache: {guestPendingDebug.dedicatedPendingCount ?? 0} · Shared cache: {guestPendingDebug.sharedCacheCount ?? 0}
-                </Text>
-                <Text style={styles.guestDebugText}>
-                  Guest ID: {guestPendingDebug.guestId || 'not saved'}
-                </Text>
-                {guestPendingDebug.error && (
-                  <Text style={styles.guestDebugError}>{guestPendingDebug.error}</Text>
-                )}
-              </View>
-            )}
             {(activeTab === 'upcoming' || activeTab === 'pending') && (
               <TouchableWeb
                 style={styles.bookButton}
@@ -4177,13 +4187,13 @@ export default function AppointmentsScreen({ navigation, route }) {
     marginBottom: 32,
   },
   guestDebugPanel: {
-    width: '100%',
     padding: 12,
     borderRadius: 10,
     backgroundColor: COLORS.primary + '12',
     borderWidth: 1,
     borderColor: COLORS.primary + '35',
-    marginBottom: 16,
+    marginHorizontal: 20,
+    marginTop: 12,
   },
   guestDebugTitle: {
     fontSize: 12,
