@@ -357,6 +357,9 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
     });
   };
 
+  const debugStaffRows = getDisplayedNurses();
+  const debugAdminCodes = adminStaff.map((admin) => admin.code).filter(Boolean);
+
   const handleDeleteNurse = (nurse) => {
     setNurseToDelete(nurse);
     setDeleteModalVisible(true);
@@ -718,6 +721,16 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
       />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        {isEmbedded && (
+          <View style={styles.debugCard}>
+            <Text style={styles.debugTitle}>Staff Debug</Text>
+            <Text style={styles.debugText}>Loaded admins: {adminStaff.length}</Text>
+            <Text style={styles.debugText}>Admin codes: {debugAdminCodes.join(', ') || 'none'}</Text>
+            <Text style={styles.debugText}>Visible staff rows: {debugStaffRows.length}</Text>
+            <Text style={styles.debugText}>Filter: {selectedCard || 'all'}</Text>
+          </View>
+        )}
+
         {/* Stats Cards */}
         <View style={styles.statsContainer}>
           <TouchableWeb 
@@ -791,7 +804,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
               'All Staff Members'
             }
           </Text>
-          {getDisplayedNurses().map((nurse, index) => (
+          {debugStaffRows.map((nurse, index) => (
             <View key={`nurse-${nurse.id || nurse.code || nurse.name || 'unknown'}-${index}`} style={styles.compactCard}>
               <TouchableWeb
                 onLongPress={() => {
