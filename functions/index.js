@@ -1,6 +1,7 @@
 const functionsV1 = require('firebase-functions/v1');
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentCreated, onDocumentUpdated } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const admin = require('firebase-admin');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
@@ -1165,7 +1166,10 @@ exports.requestEmailVerificationCode = onCall(
         resendCount = Number(existing.resendCount || 0);
         const lastSentAt = existing.lastSentAt;
         const lastSentMs = lastSentAt?.toMillis ? lastSentAt.toMillis() : null;
-        if (lastSentMs && nowMs - lastSentMs < throttleMs) {
+        // Older records predate deliveryStatus, so keep their existing throttle
+        // behavior. New records only throttle after SMTP accepted the email.
+        const deliverySucceeded = existing.deliveryStatus === 'sent' || !existing.deliveryStatus;
+        if (deliverySucceeded && lastSentMs && nowMs - lastSentMs < throttleMs) {
           const retryAfterSeconds = Math.ceil((throttleMs - (nowMs - lastSentMs)) / 1000);
           return { success: true, throttled: true, retryAfterSeconds };
         }
@@ -1179,20 +1183,6 @@ exports.requestEmailVerificationCode = onCall(
     const codeHash = hashVerificationCode(salt, code);
     const expiresAt = admin.firestore.Timestamp.fromMillis(nowMs + ttlMs);
 
-    await ref.set(
-      {
-        email,
-        codeHash,
-        salt,
-        createdAt: nowTs,
-        lastSentAt: nowTs,
-        expiresAt,
-        attemptCount: 0,
-        resendCount: resendCount + 1,
-      },
-      { merge: true }
-    );
-
     let displayName = userRecord?.displayName || '';
     if (!displayName) {
       displayName = await lookupProfileNameByEmail(email);
@@ -1204,7 +1194,7 @@ exports.requestEmailVerificationCode = onCall(
     const fromEmailOverride = process.env.EMAIL_VERIFICATION_FROM_EMAIL || '';
     const fromNameOverride = process.env.EMAIL_VERIFICATION_FROM_NAME || '';
 
-    await sendMail({
+    const mailResult = await sendMail({
       to: email,
       subject,
       html,
@@ -1212,6 +1202,26 @@ exports.requestEmailVerificationCode = onCall(
       fromEmailOverride,
       fromNameOverride,
     });
+
+    const acceptedRecipients = (mailResult?.accepted || []).map((recipient) => normalizeString(recipient));
+    if (!acceptedRecipients.includes(email)) {
+      throw new Error('Email provider did not accept the verification message');
+    }
+
+    await ref.set(
+      {
+        email,
+        codeHash,
+        salt,
+        createdAt: nowTs,
+        lastSentAt: nowTs,
+        expiresAt,
+        attemptCount: 0,
+        resendCount: resendCount + 1,
+        deliveryStatus: 'sent',
+      },
+      { merge: true }
+    );
 
     return { success: true, sent: true, ttlMinutes };
   }
@@ -1292,6 +1302,8 @@ exports.verifyEmailVerificationCode = onCall(
     // Mark the Firebase Auth user as verified.
     await admin.auth().updateUser(uid, { emailVerified: true });
 
+    // Intentionally wait until verified sign-in before creating a client profile.
+
     // Delete the code doc so it can't be reused.
     try {
       await ref.delete();
@@ -1300,6 +1312,79 @@ exports.verifyEmailVerificationCode = onCall(
     }
 
     return { success: true };
+  }
+);
+
+// Keep incomplete signups out of the client database and remove abandoned,
+// unverified Auth accounts after the retention period.
+exports.cleanupAbandonedSignupAccounts = onSchedule(
+  {
+    schedule: 'every day 03:15',
+    timeZone: 'America/Jamaica',
+    region: 'us-central1',
+  },
+  async () => {
+    const retentionDays = Math.max(1, Number(process.env.UNVERIFIED_ACCOUNT_RETENTION_DAYS || 30));
+    const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    const db = admin.firestore();
+    let pageToken;
+    let deletedAccounts = 0;
+
+    do {
+      const page = await admin.auth().listUsers(1000, pageToken);
+      for (const user of page.users) {
+        if (user.emailVerified) continue;
+
+        const [userProfile, adminProfile, nurseProfile] = await Promise.all([
+          db.collection('users').doc(user.uid).get(),
+          db.collection('admins').doc(user.uid).get(),
+          db.collection('nurses').doc(user.uid).get(),
+        ]);
+        const role = String(userProfile.data()?.role || '').toLowerCase();
+        // Staff verification bypass is intentional; do not clean staff accounts.
+        if (
+          adminProfile.exists ||
+          nurseProfile.exists ||
+          ['admin', 'superadmin', 'nurse'].includes(role)
+        ) continue;
+
+        const createdAtMs = Date.parse(user.metadata?.creationTime || '');
+        const pastRetention = createdAtMs && createdAtMs <= cutoffMs;
+
+        if (!user.emailVerified) {
+          if (userProfile.exists) {
+            // Remove legacy pre-verification client profiles immediately.
+            await userProfile.ref.delete();
+          }
+        }
+
+        if (pastRetention) {
+          await Promise.all([
+            db.collection('emailVerificationCodes').doc(user.uid).delete().catch(() => {}),
+            admin.auth().deleteUser(user.uid).catch((error) => {
+              if (error.code !== 'auth/user-not-found') throw error;
+            }),
+          ]);
+          deletedAccounts += 1;
+        }
+      }
+      pageToken = page.pageToken;
+    } while (pageToken);
+
+    // Expired verification hashes are no longer useful, even when the account
+    // owner returns later and requests a fresh code.
+    const expiredCodes = await db.collection('emailVerificationCodes')
+      .where('expiresAt', '<=', admin.firestore.Timestamp.now())
+      .limit(500)
+      .get();
+    if (!expiredCodes.empty) {
+      const batch = db.batch();
+      expiredCodes.docs.forEach((codeDoc) => batch.delete(codeDoc.ref));
+      await batch.commit();
+    }
+
+    console.log('Cleaned abandoned signup accounts:', { count: deletedAccounts, retentionDays });
+    return null;
   }
 );
 

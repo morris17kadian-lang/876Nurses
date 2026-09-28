@@ -84,7 +84,9 @@ export default function SignupScreen({ navigation }) {
     } else {
       Alert.alert(
         'Account Created Successfully!',
-        'Your account has been created. We sent a 6-digit verification code to your email. Verify your email, then sign in.',
+        result.verificationEmailSent
+          ? 'Your account has been created. We sent a 6-digit verification code to your email. Verify your email, then sign in with your email address.'
+          : `Your account has been created, but we could not send the verification code. ${result.verificationEmailError || 'Sign in with your email address and choose Resend code.'}`,
         [
           {
             text: 'OK',

@@ -372,8 +372,10 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
           style: 'destructive',
           onPress: async () => {
             try {
-              // Delete from NurseContext (works for both nurses and admins)
-              deleteNurse(staffMember.id);
+              const result = await deleteNurse(staffMember.id);
+              if (!result?.success) {
+                throw new Error(result?.error || 'Staff profile could not be deleted');
+              }
               
               // Delete their AsyncStorage user account data
               const userKey = staffMember.code;
@@ -384,6 +386,8 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
               // Close the details modal
               setNurseDetailsModalVisible(false);
               setSelectedNurseDetails(null);
+              setAdminStaff((current) => current.filter((member) => member.id !== staffMember.id));
+              await loadAdminStaff();
               
               Alert.alert(
                 'Success', 
@@ -395,7 +399,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
               console.error('Error deleting staff member:', error);
               Alert.alert(
                 'Error', 
-                'Failed to delete staff member. Please try again.',
+                error?.message || 'Failed to delete staff member. Please try again.',
                 [{ text: 'OK' }]
               );
             }

@@ -78,6 +78,7 @@ const linking = {
   prefixes: ['nurses876://'],
   config: {
     screens: {
+      Home: 'home',
       InvoiceDisplay: 'invoice/:invoiceId',
       InvoiceManagement: 'invoice-management/:invoiceId?',
     },

@@ -430,43 +430,20 @@ export const NurseProvider = ({ children }) => {
 
   const deleteNurse = async (nurseId) => {
     try {
-      // Deleting nurse from database
-      
-      // 1. Call backend API to delete nurse (Main Backend)
-      const response = await ApiService.makeRequest(`/staff/nurse/${nurseId}`, {
-        method: 'DELETE'
-      });
-      
-      // 2. Call Firebase Service to delete nurse profile (Firestore)
-      // We do this regardless of backend success to ensure cleanup of "orphaned" Firebase accounts
-      await FirebaseService.deleteUser(nurseId);
-      
-      if (response.success) {
-        // Nurse deleted from database successfully
-        // Remove from local state
-        const updatedNurses = nurses.filter(nurse => nurse.id !== nurseId);
-        setNurses(updatedNurses);
-        return { success: true };
-      } else {
-        // Even if backend failed (maybe user didn't exist there), we removed from Firebase
-        // So we should still remove from local state if it was a Firebase-only user
-        const updatedNurses = nurses.filter(nurse => nurse.id !== nurseId);
-        setNurses(updatedNurses);
-        
-        if (response.error && response.error.includes('not found')) {
-           // It was likely a Firebase-only user, so treat as success
-           return { success: true };
-        }
-        
-        console.error('❌ Backend delete failed:', response.error);
-        return { success: false, error: response.error };
+      if (!nurseId) return { success: false, error: 'Staff ID is required' };
+
+      const result = await FirebaseService.deleteUser(nurseId);
+      if (!result?.success) {
+        return { success: false, error: result?.error || 'Staff profile could not be deleted' };
       }
+
+      setNurses((current) => current.filter((nurse) =>
+        nurse.id !== nurseId && nurse._id !== nurseId
+      ));
+      return { success: true };
     } catch (error) {
       console.error('❌ Error deleting nurse:', error);
-      // If backend fails, still remove from local state as fallback
-      const updatedNurses = nurses.filter(nurse => nurse.id !== nurseId);
-      setNurses(updatedNurses);
-      return { success: false, error: 'Network error during deletion' };
+      return { success: false, error: error?.message || 'Network error during deletion' };
     }
   };
 

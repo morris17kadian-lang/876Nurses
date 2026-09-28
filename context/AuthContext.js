@@ -53,6 +53,9 @@ export const AuthProvider = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   // Prevent onAuthStateChanged from signing out mid-signup.
   const signupInProgressRef = useRef(false);
+  const pendingSignupStorageKey = (uid) => `pendingSignup:${uid}`;
+  const pendingSignupUsernameKey = (username) =>
+    `pendingSignupUsername:${String(username || '').trim().toLowerCase()}`;
 
   // Option (c): allow staff accounts (admins/nurses) to bypass email verification.
   // This is less strict than patient verification and should be used intentionally.
@@ -258,16 +261,36 @@ export const AuthProvider = ({ children }) => {
         if (__DEV__ && DEBUG_AUTH) {
           console.log('Detected username, looking up email...');
         }
-        // Query Firestore for user with this username
-        const usersCollection = await FirebaseService.getUserByUsername(usernameOrEmail);
-        const resolvedLookupUser = usersCollection?.user;
-        const resolvedEmail = (resolvedLookupUser?.email || resolvedLookupUser?.contactEmail || '').toString().trim();
-        if (!usersCollection.success || !resolvedEmail) {
-          console.error('Username lookup failed:', usersCollection.error);
-          return { success: false, error: usersCollection?.error || 'Username not found' };
+        // Incomplete signups have no Firestore profile yet. Resolve a username
+        // locally on the signup device; verified users can always use email.
+        let pendingSignup = null;
+        try {
+          const pendingUid = await AsyncStorage.getItem(pendingSignupUsernameKey(usernameOrEmail));
+          if (pendingUid) {
+            const pendingData = await AsyncStorage.getItem(pendingSignupStorageKey(pendingUid));
+            pendingSignup = pendingData ? JSON.parse(pendingData) : null;
+          }
+        } catch (storageError) {
+          console.warn('Unable to resolve local pending signup:', storageError);
         }
-        emailToUse = resolvedEmail;
-        lookedUpProfile = usersCollection.user;
+
+        if (pendingSignup?.email) {
+          emailToUse = pendingSignup.email;
+        } else {
+          // Completed accounts remain discoverable by username in Firestore.
+          const usersCollection = await FirebaseService.getUserByUsername(usernameOrEmail);
+          const resolvedLookupUser = usersCollection?.user;
+          const resolvedEmail = (resolvedLookupUser?.email || resolvedLookupUser?.contactEmail || '').toString().trim();
+          if (!usersCollection.success || !resolvedEmail) {
+            console.error('Username lookup failed:', usersCollection.error);
+            return {
+              success: false,
+              error: 'Username not found. If you just verified on another device, sign in with your email address.',
+            };
+          }
+          emailToUse = resolvedEmail;
+          lookedUpProfile = usersCollection.user;
+        }
         if (__DEV__ && DEBUG_AUTH) {
           console.log('Username resolved to email:', emailToUse);
         }
@@ -308,8 +331,9 @@ export const AuthProvider = ({ children }) => {
 
         if (!bypassVerification) {
           // Best-effort: send a new verification code to help the user recover.
+          let verificationSendResult = null;
           try {
-            await requestEmailVerificationCode(emailToUse);
+            verificationSendResult = await requestEmailVerificationCode(emailToUse);
           } catch (e) {
             // Ignore resend failures (rate limiting, network, etc.).
           }
@@ -324,7 +348,9 @@ export const AuthProvider = ({ children }) => {
             success: false,
             needsEmailVerification: true,
             verificationEmail: emailToUse,
-            error: 'Please verify your email before signing in. We sent a 6-digit verification code to your email address.',
+            error: verificationSendResult?.success
+              ? 'Please verify your email before signing in. Check your inbox for the 6-digit code.'
+              : `Please verify your email before signing in. ${verificationSendResult?.error || 'We could not send a verification code. Please use Resend code.'}`,
           };
         }
       }
@@ -351,18 +377,51 @@ export const AuthProvider = ({ children }) => {
       }
 
       if (!resolvedProfile) {
-        // User exists in Auth but not in Firestore, create profile (patient default).
-        // Staff accounts should never land here if Firestore contains their admin/nurse profile.
+        // Keep incomplete registrations out of Firestore. New users' details are
+        // held locally until the account is verified and they complete sign-in.
+        let pendingSignup = null;
+        try {
+          const storedSignup = await AsyncStorage.getItem(pendingSignupStorageKey(firebaseUser.uid));
+          pendingSignup = storedSignup ? JSON.parse(storedSignup) : null;
+        } catch (storageError) {
+          console.warn('Unable to restore pending signup details:', storageError);
+        }
+
+        // User exists in Auth but not in Firestore, so this is the first completed sign-in.
         const newUserData = {
+          ...(pendingSignup || {}),
           id: firebaseUser.uid,
           email: firebaseUser.email,
-          displayName: firebaseUser.displayName || 'User',
-          role: 'patient',
-          createdAt: new Date().toISOString(),
+          username: pendingSignup?.username || firebaseUser.displayName || 'User',
+          displayName: pendingSignup?.displayName || firebaseUser.displayName || 'User',
+          role: pendingSignup?.role || 'patient',
+          emailVerified: true,
+          accountStatus: 'active',
+          welcomeEmailQueued: false,
+          createdAt: pendingSignup?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
         };
 
-        await FirebaseService.createUser(firebaseUser.uid, newUserData);
+        const createResult = await FirebaseService.createUser(firebaseUser.uid, newUserData);
+        if (!createResult?.success) {
+          throw new Error('Could not create your account profile. Please try signing in again.');
+        }
+        try {
+          await AsyncStorage.removeItem(pendingSignupStorageKey(firebaseUser.uid));
+          await AsyncStorage.removeItem(pendingSignupUsernameKey(newUserData.username));
+        } catch (storageError) {
+          console.warn('Unable to clear pending signup details:', storageError);
+        }
         resolvedProfile = newUserData;
+      } else if (resolvedProfile.emailVerified === false || resolvedProfile.accountStatus === 'pending_verification') {
+        const verifiedProfile = {
+          emailVerified: true,
+          accountStatus: 'active',
+          verifiedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await FirebaseService.updateUser(firebaseUser.uid, verifiedProfile);
+        resolvedProfile = { ...resolvedProfile, ...verifiedProfile };
       }
 
       // Queue the welcome email ONLY after the user has verified their email AND successfully signed in.
@@ -589,9 +648,9 @@ export const AuthProvider = ({ children }) => {
         userRole = 'nurse';
       }
 
-      // Create user profile in Firestore
+      // Keep signup details on this device until email verification and first sign-in.
+      // No Firestore user/client profile is created for an incomplete signup.
       const userData = {
-        id: firebaseUser.uid,
         username,
         email,
         phone,
@@ -600,34 +659,41 @@ export const AuthProvider = ({ children }) => {
         role: userRole,
         displayName: username,
         // Welcome email should be sent only after verified sign-in.
-        welcomeEmailQueued: false,
         createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
       };
 
-      const createResult = await FirebaseService.createUser(firebaseUser.uid, userData);
-
-      if (createResult.success) {
-        // Send verification code email (HARD verification required before login).
-        try {
-          await requestEmailVerificationCode(email);
-        } catch (verificationError) {
-          console.warn('Failed to send verification code email:', verificationError);
-        }
-
-        // Ensure the newly created user cannot remain signed in until verified.
-        try {
-          await signOut(auth);
-        } catch (e) {
-          // Ignore sign out failures.
-        }
-
-        return { success: true, needsEmailVerification: true, verificationEmail: email };
-      } else {
-        // Delete the Firebase Auth user if Firestore creation failed
-        await firebaseUser.delete();
-        return { success: false, error: 'Failed to create user profile' };
+      try {
+        await AsyncStorage.setItem(pendingSignupStorageKey(firebaseUser.uid), JSON.stringify(userData));
+        await AsyncStorage.setItem(pendingSignupUsernameKey(username), firebaseUser.uid);
+      } catch (storageError) {
+        // Verification can still complete on another device; profile creation
+        // will fall back to the Firebase Auth display name if local data is gone.
+        console.warn('Unable to save signup details on this device:', storageError);
       }
+
+      // Send verification code email (HARD verification required before login).
+      let verificationSendResult;
+      try {
+        verificationSendResult = await requestEmailVerificationCode(email);
+      } catch (verificationError) {
+        console.warn('Failed to send verification code email:', verificationError);
+        verificationSendResult = { success: false, error: 'Unable to send the verification email.' };
+      }
+
+      // Ensure the newly created user cannot remain signed in until verified.
+      try {
+        await signOut(auth);
+      } catch (e) {
+        // Ignore sign out failures.
+      }
+
+      return {
+        success: true,
+        needsEmailVerification: true,
+        verificationEmail: email,
+        verificationEmailSent: Boolean(verificationSendResult?.success),
+        verificationEmailError: verificationSendResult?.success ? undefined : verificationSendResult?.error,
+      };
     } catch (error) {
       console.error('Signup error:', error);
       let errorMessage = 'An error occurred during signup';

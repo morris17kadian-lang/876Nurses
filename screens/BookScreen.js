@@ -17,7 +17,7 @@ import {
   Linking,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { Timestamp } from 'firebase/firestore';
+import { Timestamp, doc, getDoc } from 'firebase/firestore';
 import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -34,6 +34,7 @@ import FygaroPaymentService from '../services/FygaroPaymentService';
 import FirebaseService from '../services/FirebaseService';
 import ApiService from '../services/ApiService';
 import PushNotificationService from '../services/PushNotificationService';
+import { db } from '../config/firebase';
 
 const DAYS_OF_WEEK = [
   { label: 'Sun', value: 0 },
@@ -152,6 +153,7 @@ export default function BookScreen({ navigation, route }) {
   const [depositAmount, setDepositAmount] = useState(0);
   const [depositRequiredSetting, setDepositRequiredSetting] = useState(true);
   const [depositPercentSetting, setDepositPercentSetting] = useState(20);
+  const [depositPolicyLoading, setDepositPolicyLoading] = useState(true);
   const [totalAmount, setTotalAmount] = useState(0);
   const [processingPayment, setProcessingPayment] = useState(false);
   const [processingConsultationPayment, setProcessingConsultationPayment] = useState(false);
@@ -390,12 +392,25 @@ export default function BookScreen({ navigation, route }) {
     React.useCallback(() => {
       let isMounted = true;
       const loadDepositPolicy = async () => {
+        setDepositPolicyLoading(true);
         try {
-          const raw = await AsyncStorage.getItem('adminPaymentGeneralSettings');
-          if (!raw) {
-            // No settings saved yet; keep defaults.
+          // This safe policy document is readable by guest bookings and is the
+          // shared source of truth for the admin's deposit setting.
+          const policySnapshot = await getDoc(doc(db, 'paymentSettings', 'bookingPolicy'));
+          if (policySnapshot.exists()) {
+            const policy = policySnapshot.data();
+            if (typeof policy?.depositRequired === 'boolean' && isMounted) {
+              setDepositRequiredSetting(policy.depositRequired);
+            }
+            if (Number.isFinite(policy?.depositPercent) && isMounted) {
+              setDepositPercentSetting(Math.max(0, Math.min(100, Number(policy.depositPercent))));
+            }
             return;
           }
+
+          // Read the older local policy while it is being migrated to Firestore.
+          const raw = await AsyncStorage.getItem('adminPaymentGeneralSettings');
+          if (!raw) return;
           const parsed = JSON.parse(raw);
 
           if (typeof parsed?.depositRequired === 'boolean' && isMounted) {
@@ -407,6 +422,8 @@ export default function BookScreen({ navigation, route }) {
           }
         } catch (error) {
           console.error('Error loading deposit settings:', error);
+        } finally {
+          if (isMounted) setDepositPolicyLoading(false);
         }
       };
       loadDepositPolicy();
@@ -567,6 +584,11 @@ export default function BookScreen({ navigation, route }) {
   };
 
       const handleSubmit = async () => {
+    if (depositPolicyLoading) {
+      Alert.alert('Please wait', 'Checking the current booking payment settings. Try again in a moment.');
+      return;
+    }
+
     // Validate form
     const baseMissing = !formData.name || !formData.email || !formData.phone || !formData.address || formData.services.length === 0 || !formData.startDate || !formData.startTime;
     const recurringMissing = isRecurring && (!formData.endDate || !formData.endTime);

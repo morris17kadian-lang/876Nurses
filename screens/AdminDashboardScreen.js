@@ -524,6 +524,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
     acceptAppointment, 
     declineAppointment,
     completeAppointment,
+    cancelAppointment,
     clearCompletedAppointments,
     updateNurseAvailability,
     updateAppointmentNotes,
@@ -705,6 +706,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const [reassignSubmitting, setReassignSubmitting] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState(null);
   const [selectedAppointmentDetails, setSelectedAppointmentDetails] = useState(null);
+  const [showPendingAppointmentActions, setShowPendingAppointmentActions] = useState(false);
   const [selectedNurseDetails, setSelectedNurseDetails] = useState(null);
   const [selectedShiftRequest, setSelectedShiftRequest] = useState(null);
 
@@ -2557,6 +2559,25 @@ export default function AdminDashboardScreen({ navigation, route }) {
   };
 
   const handleViewAppointmentDetails = async (appointment) => {
+    const appointmentStatus = String(
+      appointment?.status || appointment?.appointmentStatus || appointment?.requestStatus || ''
+    ).trim().toLowerCase();
+    const isPendingAppointment = appointment?._showAdminPendingActions === true ||
+      ['pending', 'requested', 'awaiting', 'unassigned'].includes(appointmentStatus);
+    const isRecurringAppointment = Boolean(
+      appointment?.isRecurring === true ||
+      appointment?.isRecurring === 1 ||
+      ['true', '1', 'yes'].includes(String(appointment?.isRecurring).trim().toLowerCase()) ||
+      appointment?.recurringPattern ||
+      appointment?.adminRecurring ||
+      appointment?.recurringFrequency
+    );
+    const isPendingAssignmentListItem = appointment?._showAdminPendingActions === true;
+    setShowPendingAppointmentActions(
+      isPendingAssignmentListItem ||
+      (isAdminUser && isPendingAppointment && !isRecurringAppointment)
+    );
+
     // Check if this is a recurring appointment/shift or a regular appointment
     const isRecurring = appointment.isRecurring || appointment.recurringPattern || appointment.frequency;
     
@@ -5343,7 +5364,10 @@ export default function AdminDashboardScreen({ navigation, route }) {
                         </View>
                         <TouchableWeb
                           style={styles.detailsButton}
-                          onPress={() => handleViewAppointmentDetails(assignment)}
+                          onPress={() => handleViewAppointmentDetails({
+                            ...assignment,
+                            _showAdminPendingActions: pendingAssignments.includes(assignment),
+                          })}
                           activeOpacity={0.7}
                         >
                           <LinearGradient
@@ -7380,25 +7404,8 @@ export default function AdminDashboardScreen({ navigation, route }) {
                   </View>
                 )}
 
-                {/* Action Buttons for Pending Appointments (not recurring - nurse handles those) */}
-                {isAdminUser &&
-                  ['pending', 'requested', 'awaiting', 'unassigned'].includes(
-                    String(
-                      selectedAppointmentDetails.status ||
-                      selectedAppointmentDetails.appointmentStatus ||
-                      selectedAppointmentDetails.requestStatus ||
-                      ''
-                    ).trim().toLowerCase()
-                  ) &&
-                  !(
-                    selectedAppointmentDetails.isRecurring === true ||
-                    selectedAppointmentDetails.isRecurring === 1 ||
-                    ['true', '1', 'yes'].includes(String(selectedAppointmentDetails.isRecurring).trim().toLowerCase()) ||
-                    selectedAppointmentDetails.recurringPattern ||
-                    selectedAppointmentDetails.frequency ||
-                    selectedAppointmentDetails.adminRecurring ||
-                    selectedAppointmentDetails.recurringFrequency
-                  ) && (
+                {/* Persistent actions for pending admin assignment requests */}
+                {showPendingAppointmentActions && (
                 <View style={styles.modalFooter}>
                   <TouchableWeb
                     style={styles.modalDenyButton}
@@ -13074,6 +13081,7 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.border,
     backgroundColor: COLORS.white,
     alignItems: 'stretch',
+    flexShrink: 0,
   },
   modalFooterSingle: {
     flexDirection: 'column',

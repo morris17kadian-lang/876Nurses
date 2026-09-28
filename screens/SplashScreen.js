@@ -392,7 +392,6 @@ export default function SplashScreen({ onFinish, onContinueAsGuest }) {
       Alert.alert('Signup Failed', result.error);
     } else {
       // Account is created, but email verification is required before sign-in.
-      const createdUsername = signupUsername.trim();
       const createdEmail = (result?.verificationEmail || email).toString().trim().toLowerCase();
 
       // Reset signup form and switch back to login mode.
@@ -403,8 +402,9 @@ export default function SplashScreen({ onFinish, onContinueAsGuest }) {
       setPhone('');
       setAddress('');
       setIsLogin(true);
-      // Prefill the login field with the username they just registered.
-      setUsername(createdUsername);
+      // A new unverified signup has no Firestore username record yet, so use
+      // email for the first sign-in (also works on another device).
+      setUsername(createdEmail);
 
       // Open the in-app verification modal directly (no extra "OK" button).
       openVerifyEmailModal({ knownEmail: createdEmail || undefined });
@@ -750,7 +750,7 @@ export default function SplashScreen({ onFinish, onContinueAsGuest }) {
 
     if (verifyResult?.success) {
       handleCloseVerifyEmail();
-      Alert.alert('Email Verified', 'Your email has been verified. You can now sign in.');
+      Alert.alert('Email Verified', 'Your email has been verified. Sign in with your email address to finish setting up your account.');
       return;
     }
 

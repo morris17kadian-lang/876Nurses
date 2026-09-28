@@ -13,11 +13,13 @@ import {
   Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, GRADIENTS } from '../constants';
 import InvoiceService from '../services/InvoiceService';
+import { db } from '../config/firebase';
 
 const PaymentSettingsScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
@@ -108,8 +110,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
   const loadGeneralSettings = async () => {
     try {
       const stored = await AsyncStorage.getItem(GENERAL_SETTINGS_STORAGE_KEY);
-      if (!stored) return;
-      const parsed = JSON.parse(stored);
+      const parsed = stored ? JSON.parse(stored) : {};
 
       if (typeof parsed?.paymentRemindersEnabled === 'boolean') {
         setPaymentRemindersEnabled(parsed.paymentRemindersEnabled);
@@ -132,6 +133,24 @@ const PaymentSettingsScreen = ({ navigation }) => {
       if (Number.isFinite(parsed?.depositPercent)) {
         setDepositPercent(Number(parsed.depositPercent));
       }
+
+      // Migrate the previous device-only booking policy once so guest bookings
+      // on other devices can use the admin's saved setting too.
+      const policyRef = doc(db, 'paymentSettings', 'bookingPolicy');
+      const policySnapshot = await getDoc(policyRef);
+      if (policySnapshot.exists()) {
+        const policy = policySnapshot.data();
+        if (typeof policy.depositRequired === 'boolean') setDepositRequired(policy.depositRequired);
+        if (Number.isFinite(policy.depositPercent)) setDepositPercent(Number(policy.depositPercent));
+      } else if (
+        typeof parsed.depositRequired === 'boolean' || Number.isFinite(parsed.depositPercent)
+      ) {
+        await setDoc(policyRef, {
+          depositRequired: typeof parsed.depositRequired === 'boolean' ? parsed.depositRequired : true,
+          depositPercent: Number.isFinite(parsed.depositPercent) ? Number(parsed.depositPercent) : 20,
+          updatedAt: serverTimestamp(),
+        });
+      }
     } catch (error) {
       console.error('Error loading general payment settings:', error);
     }
@@ -149,6 +168,11 @@ const PaymentSettingsScreen = ({ navigation }) => {
         depositPercent,
         updatedAt: new Date().toISOString(),
       };
+      await setDoc(doc(db, 'paymentSettings', 'bookingPolicy'), {
+        depositRequired,
+        depositPercent,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
       await AsyncStorage.setItem(GENERAL_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
       Alert.alert('Success', 'General payment settings saved successfully');
     } catch (error) {
