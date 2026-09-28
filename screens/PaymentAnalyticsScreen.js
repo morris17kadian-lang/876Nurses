@@ -11,7 +11,6 @@ import {
   Modal,
   Alert,
   RefreshControl,
-  ActivityIndicator,
   InteractionManager,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -20,8 +19,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GRADIENTS, COLORS } from '../constants';
-import ApiService from '../services/ApiService';
 import InvoiceService from '../services/InvoiceService';
+import { useAppointments } from '../context/AppointmentContext';
 
 // Get screen width safely for styles
 const screenWidth = Dimensions.get('window').width;
@@ -42,6 +41,7 @@ const DASHBOARD_GRADIENTS = {
 };
 
 const PaymentAnalyticsScreen = ({ navigation }) => {
+  const { appointments = [] } = useAppointments();
   const handleClearPaymentAnalytics = async () => {
     Alert.alert(
       'Clear Payment Analytics',
@@ -61,7 +61,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
               ];
               await AsyncStorage.multiRemove(keysToClear);
               await AsyncStorage.setItem('analyticsCleared', 'true');
-              setClientPerformanceData(null);
               setDataCleared(true);
               Alert.alert('Success', '✅ Payment analytics cleared! Data will reset to zero.');
             } catch (error) {
@@ -78,9 +77,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   const [selectedPeriod, setSelectedPeriod] = useState('weekly');
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedCardData, setSelectedCardData] = useState(null);
-  const [clientPerformanceData, setClientPerformanceData] = useState(null);
-  const [loadingClientData, setLoadingClientData] = useState(false);
-  const [invoicesCache, setInvoicesCache] = useState(null);
   const [targetsModalVisible, setTargetsModalVisible] = useState(false);
   const [selectedCurrency, setSelectedCurrency] = useState('JMD');
   const [currencyDropdownVisible, setCurrencyDropdownVisible] = useState(false);
@@ -143,55 +139,20 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         setLoadingAnalytics(false);
         return;
       }
-      
-      // Try backend first
-      try {
-        const response = await ApiService.makeRequest(`/analytics/revenue?period=${selectedPeriod}`, {
-          method: 'GET'
-        });
-
-        // Check if backend has meaningful data (not just empty array/object)
-        const hasValidBackendData = response && response.success && response.data && 
-          (typeof response.data === 'object') &&
-          (Array.isArray(response.data) ? response.data.length > 0 : 
-           (response.data.totalRevenue !== undefined || response.data.chartData));
-
-        if (hasValidBackendData) {
-          setBackendAnalytics(response.data);
-          // Cache to local storage
-          await AsyncStorage.setItem(`analytics_${selectedPeriod}`, JSON.stringify(response.data));
-          setLoadingAnalytics(false);
-          return;
-        }
-      } catch (backendError) {
-        // Backend failed, will fall through to local calculation
-      }
-      
-      // Fallback: Calculate from real app data (invoices, appointments, payments)
+      // Calculate from current invoice records so stale backend or local analytics
+      // snapshots cannot keep showing a balance after invoices have been paid/cleared.
       const analyticsData = await calculateAnalyticsFromAppData(selectedPeriod);
-      
-      if (analyticsData) {
-        setBackendAnalytics(analyticsData);
-        // Cache to local storage
-        await AsyncStorage.setItem(`analytics_${selectedPeriod}`, JSON.stringify(analyticsData));
-      } else {
-        // Try cached data
-        const cached = await AsyncStorage.getItem(`analytics_${selectedPeriod}`);
-        if (cached) {
-          setBackendAnalytics(JSON.parse(cached));
-        }
-      }
+      setBackendAnalytics(analyticsData);
     } catch (error) {
       console.error('[Analytics] Error:', error.message);
-      // Try cached data as last resort
-      try {
-        const cached = await AsyncStorage.getItem(`analytics_${selectedPeriod}`);
-        if (cached) {
-          setBackendAnalytics(JSON.parse(cached));
-        }
-      } catch (e) {
-        // Silent fail on cache read
-      }
+      setBackendAnalytics({
+        totalRevenue: 0,
+        totalBalance: 0,
+        totalTransactions: 0,
+        chartData: [],
+        growthRate: '0%',
+        dataSource: 'app',
+      });
     } finally {
       setLoadingAnalytics(false);
     }
@@ -205,14 +166,17 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       // Get real data from app
       const allInvoices = await InvoiceService.getAllInvoices();
       const invoices = allInvoices?.filter(inv => !inv.invoiceId?.includes('SAMPLE')) || [];
-      
-      if (invoices.length === 0) {
-        return null;
-      }
+
+      const outstandingInvoices = invoices.filter((invoice) => {
+        if (InvoiceService._isInvoicePaid(invoice)) return false;
+        const outstanding = InvoiceService._getInvoiceOutstandingAmount(invoice);
+        return Number.isFinite(outstanding) && outstanding > 0;
+      });
+      const outstandingBalance = outstandingInvoices.reduce((sum, invoice) => {
+        return sum + InvoiceService._getInvoiceOutstandingAmount(invoice);
+      }, 0);
 
       // Cache invoices for reuse elsewhere (e.g., client performance)
-      setInvoicesCache(invoices);
-
       const now = new Date();
       const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       
@@ -300,31 +264,75 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         }
       };
 
-      // Filter invoices for current and previous periods
-      // Use service date (when service was performed) or creation date as fallback
-      const getInvoiceDate = (inv) => {
-        // Priority: serviceDate, date, createdAt
-        return inv.serviceDate || inv.date || inv.createdAt;
+      const toIsoString = (value) => {
+        if (!value) return '';
+        if (typeof value === 'string') return value;
+        if (value instanceof Date) return value.toISOString();
+        if (typeof value.toDate === 'function') return value.toDate().toISOString();
+        return '';
       };
 
-      const currentPeriodInvoices = invoices.filter(inv => {
-        const dateStr = getInvoiceDate(inv);
-        return dateStr && isInCurrentPeriod(dateStr);
-      });
-      
-      const previousPeriodInvoices = invoices.filter(inv => {
-        const dateStr = getInvoiceDate(inv);
-        return dateStr && isInPreviousPeriod(dateStr);
+      // Analytics count payment events, not invoices. Some older webhook-updated
+      // invoices only have amountPaid/paymentTransactionId, so synthesize one
+      // event for the unrepresented paid amount in those records.
+      const paymentTransactions = invoices.flatMap((invoice) => {
+        const fallbackDate = toIsoString(
+          invoice.lastPaymentDate || invoice.paidDate || invoice.createdAt
+        );
+        const payments = (Array.isArray(invoice.payments) ? invoice.payments : [])
+          .filter((payment) => {
+            const status = String(payment?.status || '').trim().toLowerCase();
+            return !['failed', 'cancelled', 'canceled', 'pending', 'processing', 'refunded', 'void'].includes(status)
+              && Number(payment?.amount) > 0;
+          })
+          .map((payment) => ({
+            invoice,
+            amount: Number(payment.amount),
+            date: toIsoString(payment.date || payment.paidAt) || fallbackDate,
+            method: payment.method || invoice.paymentMethod || 'Payment',
+          }));
+
+        const recordedPaymentsTotal = payments.reduce((sum, payment) => sum + payment.amount, 0);
+        const savedPaidAmount = [invoice.paidAmount, invoice.amountPaid, invoice.depositPaid]
+          .map(Number)
+          .find((amount) => Number.isFinite(amount) && amount > 0) || 0;
+        const reportedPaidAmount = Math.max(recordedPaymentsTotal, savedPaidAmount);
+        const unrecordedPaidAmount = reportedPaidAmount - recordedPaymentsTotal;
+
+        if (unrecordedPaidAmount > 0 && fallbackDate) {
+          payments.push({
+            invoice,
+            amount: unrecordedPaidAmount,
+            date: fallbackDate,
+            method: invoice.paymentMethod || 'Payment',
+            transactionId: invoice.paymentTransactionId || null,
+          });
+        } else if (payments.length === 0 && InvoiceService._isInvoicePaid(invoice)) {
+          const invoiceTotal = InvoiceService._getInvoiceTotal(invoice);
+          if (invoiceTotal > 0 && fallbackDate) {
+            payments.push({
+              invoice,
+              amount: invoiceTotal,
+              date: fallbackDate,
+              method: invoice.paymentMethod || 'Payment',
+              transactionId: invoice.paymentTransactionId || null,
+            });
+          }
+        }
+
+        return payments;
       });
 
-      // Calculate totals
-      const totalRevenue = currentPeriodInvoices.reduce((sum, inv) => 
-        sum + (inv.total || inv.finalTotal || inv.amount || 0), 0
+      const currentPeriodPayments = paymentTransactions.filter((payment) =>
+        payment.date && isInCurrentPeriod(payment.date)
       );
-      const totalTransactions = currentPeriodInvoices.length;
-      const previousRevenue = previousPeriodInvoices.reduce((sum, inv) => 
-        sum + (inv.total || inv.finalTotal || inv.amount || 0), 0
+      const previousPeriodPayments = paymentTransactions.filter((payment) =>
+        payment.date && isInPreviousPeriod(payment.date)
       );
+
+      const totalRevenue = currentPeriodPayments.reduce((sum, payment) => sum + payment.amount, 0);
+      const totalTransactions = currentPeriodPayments.length;
+      const previousRevenue = previousPeriodPayments.reduce((sum, payment) => sum + payment.amount, 0);
 
       // Calculate growth rate
       let growthRate = '0%';
@@ -339,14 +347,10 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       const chartData = (() => {
         const segments = Array(7).fill(0).map(() => ({ amount: 0, count: 0 }));
         
-        currentPeriodInvoices.forEach(inv => {
-          const dateStr = getInvoiceDate(inv);
-          if (!dateStr) return;
-          
-          const invDate = parseInvoiceDate(dateStr);
+        currentPeriodPayments.forEach(payment => {
+          const invDate = parseInvoiceDate(payment.date);
           if (!invDate || isNaN(invDate.getTime())) return;
           
-          const amount = inv.total || inv.finalTotal || inv.amount || 0;
           let segmentIndex = 0;
 
           switch (period) {
@@ -370,7 +374,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
               break;
           }
 
-          segments[segmentIndex].amount += amount;
+          segments[segmentIndex].amount += payment.amount;
           segments[segmentIndex].count += 1;
         });
 
@@ -389,11 +393,10 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         }));
       })();
 
-      // Service breakdown from invoice items
+      // Service and payment-method totals follow the same payment events.
       const serviceBreakdown = {};
-      currentPeriodInvoices.forEach(inv => {
+      currentPeriodPayments.forEach(({ invoice: inv, amount }) => {
         const serviceName = inv.service || (inv.items?.[0]?.description) || 'General Service';
-        const amount = inv.total || inv.finalTotal || inv.amount || 0;
         
         if (!serviceBreakdown[serviceName]) {
           serviceBreakdown[serviceName] = { revenue: 0, count: 0 };
@@ -404,18 +407,17 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
 
       // Payment method breakdown
       const paymentMethods = {};
-      currentPeriodInvoices.forEach(inv => {
-        if (inv.paymentMethod) {
-          const method = inv.paymentMethod;
-          if (!paymentMethods[method]) {
-            paymentMethods[method] = 0;
-          }
-          paymentMethods[method] += inv.total || inv.finalTotal || inv.amount || 0;
+      currentPeriodPayments.forEach(({ method, amount }) => {
+        if (method) {
+          if (!paymentMethods[method]) paymentMethods[method] = 0;
+          paymentMethods[method] += amount;
         }
       });
       
       return {
         totalRevenue,
+        totalBalance: outstandingBalance,
+        totalBalanceInvoices: outstandingInvoices.length,
         totalTransactions,
         chartData,
         growthRate,
@@ -443,7 +445,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   const onRefresh = React.useCallback(async () => {
     setRefreshing(true);
     await fetchAnalytics();
-    await fetchClientPerformanceData();
     setRefreshing(false);
   }, [selectedPeriod, dataCleared]);
 
@@ -468,6 +469,8 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       return {
         chartData,
         totalRevenue: total,
+        totalBalance: Number(backendAnalytics.totalBalance) || 0,
+        totalBalanceInvoices: Number(backendAnalytics.totalBalanceInvoices) || 0,
         totalTransactions: transactions,
         periodLabel: period === 'daily' ? 'Today' : period === 'weekly' ? 'This Week' : period === 'yearly' ? 'This Year' : 'This Month',
         growthRate: backendAnalytics.growthRate || '0%',
@@ -487,77 +490,29 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           { label: period === 'daily' ? '12AM' : period === 'weekly' ? 'Sun' : period === 'yearly' ? 'Jul' : '', amount: 0, percentage: 0 },
         ],
         totalRevenue: 0,
+        totalBalance: 0,
+        totalBalanceInvoices: 0,
         totalTransactions: 0,
         periodLabel: period === 'daily' ? 'Today' : period === 'weekly' ? 'This Week' : period === 'yearly' ? 'This Year' : 'This Month',
         growthRate: '0%',
       };
     }
     
-    switch (period) {
-      case 'daily':
-        return {
-          chartData: [
-            { label: '6AM', amount: 12000, percentage: 40 },
-            { label: '9AM', amount: 18000, percentage: 60 },
-            { label: '12PM', amount: 25500, percentage: 85 },
-            { label: '3PM', amount: 30000, percentage: 100 },
-            { label: '6PM', amount: 22500, percentage: 75 },
-            { label: '9PM', amount: 15000, percentage: 50 },
-            { label: '12AM', amount: 7500, percentage: 25 },
-          ],
-          totalRevenue: 130500,
-          totalTransactions: 42,
-          periodLabel: 'Today',
-          growthRate: '+8.3%',
-        };
-      case 'weekly':
-        return {
-          chartData: [
-            { label: 'Mon', amount: 75000, percentage: 75 },
-            { label: 'Tue', amount: 45000, percentage: 45 },
-            { label: 'Wed', amount: 90000, percentage: 90 },
-            { label: 'Thu', amount: 30000, percentage: 30 },
-            { label: 'Fri', amount: 105000, percentage: 100 },
-            { label: 'Sat', amount: 60000, percentage: 60 },
-            { label: 'Sun', amount: 82500, percentage: 80 },
-          ],
-          totalRevenue: 487500,
-          totalTransactions: 145,
-          periodLabel: 'This Week',
-          growthRate: '+12.5%',
-        };
-      case 'monthly':
-        return {
-          chartData: [
-            { label: 'Week 1', amount: 185000, percentage: 70 },
-            { label: 'Week 2', amount: 220000, percentage: 83 },
-            { label: 'Week 3', amount: 265000, percentage: 100 },
-            { label: 'Week 4', amount: 195000, percentage: 74 },
-          ],
-          totalRevenue: 865000,
-          totalTransactions: 320,
-          periodLabel: 'This Month',
-          growthRate: '+15.2%',
-        };
-      case 'yearly':
-        return {
-          chartData: [
-            { label: 'Jan', amount: 1500000, percentage: 60 },
-            { label: 'Feb', amount: 1800000, percentage: 72 },
-            { label: 'Mar', amount: 2100000, percentage: 84 },
-            { label: 'Apr', amount: 1950000, percentage: 78 },
-            { label: 'May', amount: 2250000, percentage: 90 },
-            { label: 'Jun', amount: 2500000, percentage: 100 },
-            { label: 'Jul', amount: 2175000, percentage: 87 },
-          ],
-          totalRevenue: 14275000,
-          totalTransactions: 4250,
-          periodLabel: 'This Year',
-          growthRate: '+18.7%',
-        };
-      default:
-        return getDataForPeriod('weekly');
-    }
+    const labels = {
+      daily: ['6AM', '9AM', '12PM', '3PM', '6PM', '9PM', '12AM'],
+      weekly: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+      monthly: ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Week 6', 'Week 7'],
+      yearly: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'],
+    };
+    return {
+      chartData: (labels[period] || labels.weekly).map(label => ({ label, amount: 0, percentage: 0 })),
+      totalRevenue: 0,
+      totalBalance: 0,
+      totalBalanceInvoices: 0,
+      totalTransactions: 0,
+      periodLabel: period === 'daily' ? 'Today' : period === 'weekly' ? 'This Week' : period === 'yearly' ? 'This Year' : 'This Month',
+      growthRate: '0%',
+    };
   };
 
   const currentData = React.useMemo(
@@ -565,12 +520,113 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     [selectedPeriod, backendAnalytics, dataCleared]
   );
 
-  const averageTransaction = React.useMemo(() => {
-    const totalRevenue = Number(currentData?.totalRevenue ?? 0);
-    const totalTransactions = Number(currentData?.totalTransactions ?? 0);
-    if (!Number.isFinite(totalRevenue) || !Number.isFinite(totalTransactions) || totalTransactions <= 0) return 0;
-    return Math.round(totalRevenue / totalTransactions);
-  }, [currentData?.totalRevenue, currentData?.totalTransactions]);
+  const appointmentAnalytics = React.useMemo(() => {
+    const now = new Date();
+    const periodStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (selectedPeriod === 'weekly') {
+      periodStart.setDate(periodStart.getDate() - periodStart.getDay());
+    } else if (selectedPeriod === 'monthly') {
+      periodStart.setDate(1);
+    } else if (selectedPeriod === 'yearly') {
+      periodStart.setMonth(0, 1);
+    }
+    const periodEnd = new Date(periodStart);
+    if (selectedPeriod === 'daily') periodEnd.setDate(periodEnd.getDate() + 1);
+    else if (selectedPeriod === 'weekly') periodEnd.setDate(periodEnd.getDate() + 7);
+    else if (selectedPeriod === 'monthly') periodEnd.setMonth(periodEnd.getMonth() + 1);
+    else periodEnd.setFullYear(periodEnd.getFullYear() + 1);
+
+    const asDate = (value) => {
+      if (!value) return null;
+      const candidate = typeof value.toDate === 'function' ? value.toDate() : value;
+      const date = candidate instanceof Date ? candidate : new Date(candidate);
+      return Number.isNaN(date.getTime()) ? null : date;
+    };
+    const appointmentDate = (appointment) => asDate(
+      appointment.completedAt || appointment.date || appointment.createdAt
+    );
+    const allAppointments = Array.isArray(appointments) ? appointments : [];
+    const inCurrentPeriod = (appointment) => {
+      const date = appointmentDate(appointment);
+      return date && date >= periodStart && date < periodEnd;
+    };
+    const periodAppointments = allAppointments.filter(inCurrentPeriod);
+    const statusOf = (appointment) => String(appointment.status || '').trim().toLowerCase();
+    const completedAppointments = periodAppointments.filter((appointment) => statusOf(appointment) === 'completed');
+    const cancelledAppointments = periodAppointments.filter((appointment) =>
+      ['cancelled', 'canceled', 'declined', 'no-show', 'noshow'].includes(statusOf(appointment))
+    );
+    const resolvedCount = completedAppointments.length + cancelledAppointments.length;
+    const completionRate = resolvedCount > 0
+      ? (completedAppointments.length / resolvedCount) * 100
+      : 0;
+    const clientKey = (appointment) => String(
+      appointment.clientId || appointment.patientId || appointment.userId ||
+      appointment.clientEmail || appointment.patientEmail ||
+      appointment.clientName || appointment.patientName || ''
+    ).trim().toLowerCase();
+    const firstVisitByClient = new Map();
+    allAppointments.forEach((appointment) => {
+      const key = clientKey(appointment);
+      const date = appointmentDate(appointment);
+      if (!key || !date) return;
+      const firstVisit = firstVisitByClient.get(key);
+      if (!firstVisit || date < firstVisit) firstVisitByClient.set(key, date);
+    });
+    const acquisitions = [...firstVisitByClient.values()].filter(
+      (date) => date >= periodStart && date < periodEnd
+    ).length;
+    const completedClientCounts = new Map();
+    allAppointments.filter((appointment) => statusOf(appointment) === 'completed').forEach((appointment) => {
+      const key = clientKey(appointment);
+      if (key) completedClientCounts.set(key, (completedClientCounts.get(key) || 0) + 1);
+    });
+    const completedClients = [...completedClientCounts.values()];
+    const repeatClientRate = completedClients.length
+      ? (completedClients.filter((count) => count > 1).length / completedClients.length) * 100
+      : 0;
+    const ratings = completedAppointments
+      .map((appointment) => Number(
+        appointment.clientRating ?? appointment.rating ?? appointment.feedback?.rating ?? appointment.review?.rating
+      ))
+      .filter((rating) => Number.isFinite(rating) && rating >= 0 && rating <= 5);
+    const satisfaction = ratings.length
+      ? ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length
+      : null;
+    const clientsInPeriod = new Map();
+    completedAppointments.forEach((appointment) => {
+      const key = clientKey(appointment);
+      if (!key) return;
+      const client = clientsInPeriod.get(key) || {
+        clientName: appointment.clientName || appointment.patientName || 'Client',
+        appointmentCount: 0,
+        totalSpent: 0,
+      };
+      client.appointmentCount += 1;
+      clientsInPeriod.set(key, client);
+    });
+    const statusCounts = periodAppointments.reduce((counts, appointment) => {
+      const status = statusOf(appointment);
+      if (['pending', 'requested', 'pending_assignment'].includes(status)) counts.pending += 1;
+      if (['confirmed', 'assigned', 'accepted', 'clocked-in', 'in-progress', 'in_progress'].includes(status)) counts.inProgress += 1;
+      return counts;
+    }, { pending: 0, inProgress: 0 });
+
+    return {
+      total: periodAppointments.length,
+      completed: completedAppointments.length,
+      cancelled: cancelledAppointments.length,
+      resolved: resolvedCount,
+      completionRate,
+      acquisitions,
+      repeatClientRate,
+      satisfaction,
+      frequentClients: [...clientsInPeriod.values()]
+        .sort((a, b) => b.appointmentCount - a.appointmentCount)
+        .slice(0, 3),
+      ...statusCounts,
+    };
+  }, [appointments, selectedPeriod]);
 
   // Get gradient based on selected period
   const getWalletGradient = (period) => {
@@ -595,7 +651,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       return {
         revenue: { current: 0, target: 0 },
         completion: { current: 0, target: 0 },
-        satisfaction: { current: 0, target: 0 },
+        satisfaction: { current: null, target: 4.8 },
         acquisitions: { current: 0, target: 0 }
       };
     }
@@ -603,27 +659,27 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     const baseTargets = {
       daily: {
         revenue: { current: currentData.totalRevenue, target: 150000 },
-        completion: { current: 94.2, target: 96 },
-        satisfaction: { current: 4.7, target: 4.8 },
-        acquisitions: { current: 1, target: 2 }
+        completion: { current: appointmentAnalytics.completionRate, target: 96 },
+        satisfaction: { current: appointmentAnalytics.satisfaction, target: 4.8 },
+        acquisitions: { current: appointmentAnalytics.acquisitions, target: 2 }
       },
       weekly: {
         revenue: { current: currentData.totalRevenue, target: 500000 },
-        completion: { current: 94.2, target: 96 },
-        satisfaction: { current: 4.7, target: 4.8 },
-        acquisitions: { current: 7, target: 10 }
+        completion: { current: appointmentAnalytics.completionRate, target: 96 },
+        satisfaction: { current: appointmentAnalytics.satisfaction, target: 4.8 },
+        acquisitions: { current: appointmentAnalytics.acquisitions, target: 10 }
       },
       monthly: {
         revenue: { current: currentData.totalRevenue, target: 1000000 },
-        completion: { current: 94.2, target: 96 },
-        satisfaction: { current: 4.7, target: 4.8 },
-        acquisitions: { current: 23, target: 30 }
+        completion: { current: appointmentAnalytics.completionRate, target: 96 },
+        satisfaction: { current: appointmentAnalytics.satisfaction, target: 4.8 },
+        acquisitions: { current: appointmentAnalytics.acquisitions, target: 30 }
       },
       yearly: {
         revenue: { current: currentData.totalRevenue, target: 15000000 },
-        completion: { current: 94.2, target: 96 },
-        satisfaction: { current: 4.7, target: 4.8 },
-        acquisitions: { current: 280, target: 360 }
+        completion: { current: appointmentAnalytics.completionRate, target: 96 },
+        satisfaction: { current: appointmentAnalytics.satisfaction, target: 4.8 },
+        acquisitions: { current: appointmentAnalytics.acquisitions, target: 360 }
       }
     };
     
@@ -649,13 +705,13 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     const totalTransactions = Number(data?.totalTransactions ?? 0);
     const safeTotalRevenue = Number.isFinite(totalRevenue) ? totalRevenue : 0;
     const safeTotalTransactions = Number.isFinite(totalTransactions) ? totalTransactions : 0;
-    const completionRate = Math.min(95 + Math.random() * 5, 100); // 95-100%
-    const servicePerformance = Math.min(90 + Math.random() * 8, 98); // 90-98%
-    const clientPerformance = Math.min(85 + Math.random() * 10, 95); // 85-95%
+    const completionRate = appointmentAnalytics.completionRate;
+    const servicePerformance = appointmentAnalytics.completionRate;
+    const clientPerformance = appointmentAnalytics.repeatClientRate;
     
     return {
       avgTransaction: safeTotalTransactions > 0 ? Math.round(safeTotalRevenue / safeTotalTransactions) : 0,
-      completed: Math.round(safeTotalTransactions * (completionRate / 100)),
+      completed: appointmentAnalytics.completed,
       servicePerformance: servicePerformance.toFixed(1),
       clientPerformance: clientPerformance.toFixed(1),
       orderPerformance: safeTotalTransactions,
@@ -670,6 +726,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       dataCleared,
       currentData?.totalRevenue,
       currentData?.totalTransactions,
+      appointmentAnalytics,
     ]
   );
 
@@ -715,114 +772,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     return `${getCurrencySymbol()}${safe.toLocaleString()}`;
   };
 
-  // Fetch frequent non-recurring clients data from backend
-  const fetchClientPerformanceData = async () => {
-    // Prevent concurrent calls
-    if (loadingClientData) {
-      return;
-    }
-    
-    try {
-      setLoadingClientData(true);
-      
-      if (dataCleared) {
-        setClientPerformanceData(null);
-        setLoadingClientData(false);
-        return;
-      }
-      
-      try {
-        const response = await ApiService.makeRequest(`/analytics/clients/frequent?period=${selectedPeriod}`, {
-          method: 'GET'
-        });
-        
-        if (response && response.success && response.data && response.data.frequentClients?.length > 0) {
-          const frequentClients = response.data.frequentClients || [];
-          // Transform data to match UI format
-          const formattedClients = frequentClients.slice(0, 5).map(client => ({
-            clientName: client.clientId?.firstName + ' ' + client.clientId?.lastName || 'Unknown Client',
-            appointmentCount: client.count || 0,
-            totalSpent: client.totalAmount || 0,
-            avgRating: 4.5 + Math.random() * 0.5 // Rating based on satisfaction
-          }));
-          
-          setClientPerformanceData({
-            frequentClients: formattedClients,
-            retentionRate: response.data.retentionRate || 0,
-            satisfactionRate: response.data.satisfactionRate || 0
-          });
-          
-          // Cache locally
-          await AsyncStorage.setItem(`clientAnalytics_${selectedPeriod}`, JSON.stringify(response.data));
-          return;
-        }
-      } catch (backendError) {
-        // Backend failed, will fall through to local calculation
-      }
-      
-      // Fallback: Calculate from local invoices
-      // Prefer cached invoices to avoid repeated heavy fetches
-      let invoices = invoicesCache;
-      if (!invoices || invoices.length === 0) {
-        // Schedule after interactions to avoid jank
-        await waitForInteractions();
-        const allInvoices = await InvoiceService.getAllInvoices();
-        invoices = allInvoices?.filter(inv => !inv.invoiceId?.includes('SAMPLE')) || [];
-      }
-      
-      if (invoices.length > 0) {
-        // Group invoices by client
-        const clientMap = {};
-        
-        invoices.forEach(inv => {
-          const clientName = inv.clientName || inv.patientName || 'Unknown Client';
-          const clientId = inv.clientId || inv.patientId || clientName;
-          
-          if (!clientMap[clientId]) {
-            clientMap[clientId] = {
-              clientName: clientName,
-              appointmentCount: 0,
-              totalSpent: 0
-            };
-          }
-          
-          clientMap[clientId].appointmentCount += 1;
-          clientMap[clientId].totalSpent += (inv.total || inv.finalTotal || 0);
-        });
-        
-        // Convert to array and sort by appointment count
-        const frequentClients = Object.values(clientMap)
-          .sort((a, b) => b.appointmentCount - a.appointmentCount)
-          .slice(0, 5)
-          .map(client => ({
-            ...client,
-            avgRating: 4.5 + Math.random() * 0.5
-          }));
-        
-        setClientPerformanceData({
-          frequentClients: frequentClients,
-          retentionRate: 75,
-          satisfactionRate: 90
-        });
-        
-        // Cache locally
-        await AsyncStorage.setItem(`clientAnalytics_${selectedPeriod}`, JSON.stringify({
-          frequentClients,
-          retentionRate: 75,
-          satisfactionRate: 90
-        }));
-      }
-    } catch (error) {
-      console.error('[Analytics] Client performance error:', error.message);
-    } finally {
-      setLoadingClientData(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchClientPerformanceData();
-  }, [selectedPeriod, dataCleared]);
-
   const serviceRevenueData = dataCleared ? [] : (() => {
     // Use real service breakdown if available from analytics
     if (backendAnalytics?.serviceBreakdown) {
@@ -831,7 +780,9 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           name,
           revenue: data.revenue,
           bookings: data.count,
-          percentage: Math.round((data.revenue / currentData.totalRevenue) * 100)
+          percentage: currentData.totalRevenue > 0
+            ? Math.round((data.revenue / currentData.totalRevenue) * 100)
+            : 0
         }))
         .sort((a, b) => b.revenue - a.revenue)
         .slice(0, 5);
@@ -853,54 +804,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       }));
     }
 
-    // Fallback to mock data
-    return [
-      {
-        id: 1,
-        name: 'Home Nursing',
-        icon: 'medical-bag',
-        revenue: Math.round(currentData.totalRevenue * 0.36),
-        bookings: 456,
-        percentage: 36,
-        gradient: COLORS.gradient1,
-      },
-      {
-        id: 2,
-        name: 'Physiotherapy',
-        icon: 'arm-flex',
-        revenue: Math.round(currentData.totalRevenue * 0.31),
-        bookings: 352,
-        percentage: 31,
-        gradient: COLORS.gradient2,
-      },
-      {
-        id: 3,
-        name: 'Blood Draws',
-        icon: 'water',
-        revenue: Math.round(currentData.totalRevenue * 0.18),
-        bookings: 298,
-        percentage: 18,
-        gradient: COLORS.gradient3,
-      },
-      {
-        id: 4,
-        name: 'Dressings',
-        icon: 'bandage',
-        revenue: Math.round(currentData.totalRevenue * 0.10),
-        bookings: 245,
-        percentage: 10,
-        gradient: COLORS.gradient4,
-      },
-      {
-        id: 5,
-        name: 'Vital Signs',
-        icon: 'heart-pulse',
-        revenue: Math.round(currentData.totalRevenue * 0.05),
-        bookings: 217,
-        percentage: 5,
-        gradient: ['#ffecd2', '#fcb69f'],
-      },
-    ];
+    return [];
   })();
 
   const paymentMethodData = dataCleared ? [] : (() => {
@@ -910,7 +814,9 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         .map(([name, amount]) => ({
           name: name.replace(/([A-Z])/g, ' $1').trim(),
           amount: Math.round(amount),
-          percentage: Math.round((amount / currentData.totalRevenue) * 100)
+          percentage: currentData.totalRevenue > 0
+            ? Math.round((amount / currentData.totalRevenue) * 100)
+            : 0
         }))
         .sort((a, b) => b.amount - a.amount)
         .slice(0, 3);
@@ -935,33 +841,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       }));
     }
 
-    // Fallback to mock data
-    return [
-      {
-        id: 1,
-        name: 'Credit/Debit Card',
-        icon: 'credit-card',
-        amount: Math.round(currentData.totalRevenue * 0.60),
-        percentage: 60,
-        gradient: COLORS.gradient1,
-      },
-      {
-        id: 2,
-        name: 'Digital Wallet',
-        icon: 'wallet',
-        amount: Math.round(currentData.totalRevenue * 0.30),
-        percentage: 30,
-        gradient: COLORS.gradient2,
-      },
-      {
-        id: 3,
-        name: 'Bank Transfer',
-        icon: 'bank-transfer',
-        amount: Math.round(currentData.totalRevenue * 0.10),
-        percentage: 10,
-        gradient: COLORS.gradient3,
-      },
-    ];
+    return [];
   })();
 
   const formatCurrency = (amount) => {
@@ -1045,7 +925,8 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   target: formatCurrencyWithConverter(targets.revenue.target),
                   icon: 'currency-usd',
                   color: '#4CAF50',
-                  key: 'revenue'
+                  key: 'revenue',
+                  progress: targets.revenue.target > 0 ? targets.revenue.current / targets.revenue.target : 0,
                 },
                 { 
                   title: 'Service Completion Rate', 
@@ -1053,15 +934,17 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   target: `${targets.completion.target}%`,
                   icon: 'check-circle',
                   color: '#2196F3',
-                  key: 'completion'
+                  key: 'completion',
+                  progress: targets.completion.target > 0 ? targets.completion.current / targets.completion.target : 0,
                 },
                 { 
                   title: 'Client Satisfaction Score', 
-                  current: `${targets.satisfaction.current}/5`, 
+                  current: targets.satisfaction.current == null ? 'Not rated' : `${targets.satisfaction.current.toFixed(1)}/5`,
                   target: `${targets.satisfaction.target}/5`,
                   icon: 'star',
                   color: '#FF9800',
-                  key: 'satisfaction'
+                  key: 'satisfaction',
+                  progress: targets.satisfaction.current == null ? null : targets.satisfaction.current / targets.satisfaction.target,
                 },
                 { 
                   title: 'New Client Acquisition', 
@@ -1069,7 +952,8 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   target: targets.acquisitions.target.toString(),
                   icon: 'account-plus',
                   color: '#9C27B0',
-                  key: 'acquisition'
+                  key: 'acquisition',
+                  progress: targets.acquisitions.target > 0 ? targets.acquisitions.current / targets.acquisitions.target : 0,
                 }
               ];
             })().map((target, index) => (
@@ -1114,13 +998,15 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                       style={[
                         styles.targetProgressFill, 
                         { 
-                          width: '75%', 
+                          width: `${Math.max(0, Math.min((target.progress || 0) * 100, 100))}%`,
                           backgroundColor: target.color + '40' 
                         }
                       ]} 
                     />
                   </View>
-                  <Text style={[styles.targetProgressText, styles.modalPercentText]}>75% to goal</Text>
+                  <Text style={[styles.targetProgressText, styles.modalPercentText]}>
+                    {target.progress == null ? 'No ratings yet' : `${Math.round(Math.max(0, Math.min(target.progress * 100, 100)))}% to goal`}
+                  </Text>
                 </View>
               </View>
             ))}
@@ -1171,9 +1057,11 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       onDismiss={closeDetailsModal}
     >
       <TouchableWithoutFeedback onPress={closeDetailsModal}>
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]}>
           <View pointerEvents="box-none">
-        <View style={styles.modalContent}>
+        <View style={[styles.modalContent, styles.detailsModalContent, {
+          height: Math.min(Dimensions.get('window').height - insets.top - insets.bottom - 48, 620),
+        }]}>
           <View style={styles.modalHeader}>
             <View style={styles.modalIconContainer}>
               <View style={styles.modalHeaderText}>
@@ -1199,11 +1087,12 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           </View>
           
           <ScrollView
-            style={styles.modalBody}
+            style={[styles.modalBody, styles.detailsModalBody]}
             keyboardShouldPersistTaps="handled"
             scrollEventThrottle={16}
             nestedScrollEnabled={true}
-            contentContainerStyle={{ paddingBottom: 24 }}
+            contentContainerStyle={{ paddingBottom: 32, flexGrow: 1 }}
+            showsVerticalScrollIndicator={true}
           >
             {selectedCardData?.details?.map((detail, index) => (
               <View key={index} style={styles.modalDetailItem}>
@@ -1239,14 +1128,14 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       >
         <View style={styles.walletTopRow}>
           <View>
-            <Text style={styles.walletLabel}>Total Balance - {currentData.periodLabel}</Text>
-            <Text style={styles.walletAmount}>{formatCurrencyWithConverter(currentData.totalRevenue)}</Text>
+            <Text style={styles.walletLabel}>Outstanding Balance</Text>
+            <Text style={styles.walletAmount}>{formatCurrencyWithConverter(currentData.totalBalance)}</Text>
             {loadingAnalytics && (
               <Text style={[styles.walletLabel, { fontSize: 10, marginTop: 4 }]}>Loading...</Text>
             )}
             {backendAnalytics && backendAnalytics.dataSource === 'app' && (
               <Text style={[styles.walletLabel, { fontSize: 9, marginTop: 2 }]}>
-                From {currentData.totalTransactions} invoice{currentData.totalTransactions !== 1 ? 's' : ''}
+                From {currentData.totalBalanceInvoices} unpaid invoice{currentData.totalBalanceInvoices !== 1 ? 's' : ''}
               </Text>
             )}
           </View>
@@ -1284,20 +1173,15 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   // Analytics cards component with click handlers
   const handleCardPress = (cardType) => {
     // Don't open modal if client data is still loading
-    if (cardType === 'clientPerformance' && loadingClientData) {
-      return;
-    }
-    
     const ACCENT_BLUE = '#2196F3';
     const cardDetails = {
       avgTransaction: {
         title: 'Average Transaction Details',
-        mainValue: formatCurrency(analyticsData.avgTransaction),
+        mainValue: formatCurrencyWithConverter(analyticsData.avgTransaction),
         details: [
           { label: `Current ${selectedPeriod}`, value: formatCurrencyWithConverter(analyticsData.avgTransaction) },
-          { label: `Previous ${selectedPeriod}`, value: formatCurrencyWithConverter(analyticsData.avgTransaction * 0.95) },
-          { label: 'Best Performance', value: formatCurrencyWithConverter(analyticsData.avgTransaction * 1.2) },
-          { label: 'Industry Average', value: formatCurrencyWithConverter(analyticsData.avgTransaction * 0.87) },
+          { label: 'Payments in period', value: currentData.totalTransactions.toString() },
+          { label: 'Revenue in period', value: formatCurrencyWithConverter(currentData.totalRevenue) },
         ],
         icon: 'calculator',
         color: ACCENT_BLUE
@@ -1306,8 +1190,8 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         title: 'Completed Services',
         mainValue: analyticsData.completed.toString(),
         details: [
-          { label: `${selectedPeriod.charAt(0).toUpperCase() + selectedPeriod.slice(1)} Total`, value: analyticsData.completed.toString() },
-          { label: `Previous ${selectedPeriod}`, value: Math.round(analyticsData.completed * 0.85).toString() },
+          { label: 'Completed services', value: appointmentAnalytics.completed.toString() },
+          { label: 'Resolved appointments', value: appointmentAnalytics.resolved.toString() },
           { label: 'Total Revenue', value: formatCurrencyWithConverter(currentData.totalRevenue) },
           { label: 'Success Rate', value: `${analyticsData.completionRate}%` },
         ],
@@ -1318,56 +1202,57 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         title: 'Service Performance Analytics',
         mainValue: `${analyticsData.servicePerformance}%`,
         details: [
-          { label: 'Nursing Services', value: `${(parseFloat(analyticsData.servicePerformance) + 2.6).toFixed(1)}%` },
-          { label: 'Home Care', value: `${analyticsData.servicePerformance}%` },
-          { label: 'Medical Care', value: `${(parseFloat(analyticsData.servicePerformance) - 2.7).toFixed(1)}%` },
-          { label: 'Emergency Services', value: `${(parseFloat(analyticsData.servicePerformance) + 2.9).toFixed(1)}%` },
+          { label: 'Completed appointments', value: appointmentAnalytics.completed.toString() },
+          { label: 'Cancelled appointments', value: appointmentAnalytics.cancelled.toString() },
+          { label: 'Resolved appointments', value: appointmentAnalytics.resolved.toString() },
+          { label: 'Completion rate', value: `${analyticsData.servicePerformance}%` },
         ],
         icon: 'medical-bag',
         color: ACCENT_BLUE
       },
       clientPerformance: {
-        title: 'Frequent Non-Recurring Clients',
-        mainValue: `${clientPerformanceData?.retentionRate || 87.5}%`,
-        details: clientPerformanceData?.frequentClients ? [
+        title: 'Client Performance Overview',
+        mainValue: `${appointmentAnalytics.repeatClientRate.toFixed(1)}%`,
+        details: appointmentAnalytics.frequentClients.length ? [
           { 
             label: 'Top Client', 
-            value: `${clientPerformanceData.frequentClients[0]?.clientName || 'Unknown Client'} (${clientPerformanceData.frequentClients[0]?.appointmentCount || 0} visits)` 
+            value: `${appointmentAnalytics.frequentClients[0].clientName} (${appointmentAnalytics.frequentClients[0].appointmentCount} visits)`
           },
           { 
             label: 'Second Most', 
-            value: `${clientPerformanceData.frequentClients[1]?.clientName || 'Unknown Client'} (${clientPerformanceData.frequentClients[1]?.appointmentCount || 0} visits)` 
+            value: appointmentAnalytics.frequentClients[1]
+              ? `${appointmentAnalytics.frequentClients[1].clientName} (${appointmentAnalytics.frequentClients[1].appointmentCount} visits)`
+              : 'No other completed visits'
           },
           { 
             label: 'Third Most', 
-            value: `${clientPerformanceData.frequentClients[2]?.clientName || 'Unknown Client'} (${clientPerformanceData.frequentClients[2]?.appointmentCount || 0} visits)` 
+            value: appointmentAnalytics.frequentClients[2]
+              ? `${appointmentAnalytics.frequentClients[2].clientName} (${appointmentAnalytics.frequentClients[2].appointmentCount} visits)`
+              : 'No other completed visits'
           },
-          { 
-            label: 'Avg Spend/Client', 
-            value: formatCurrency(
-              clientPerformanceData.frequentClients.reduce((sum, client) => sum + (client.totalSpent || 0), 0) / 
-              Math.max(1, clientPerformanceData.frequentClients.length)
-            )
-          },
-          { label: 'Satisfaction Rate', value: `${clientPerformanceData?.satisfactionRate || 92.3}%` },
+          { label: 'Repeat client rate', value: `${appointmentAnalytics.repeatClientRate.toFixed(1)}%` },
+          { label: 'Satisfaction score', value: appointmentAnalytics.satisfaction == null
+            ? 'Not rated'
+            : `${appointmentAnalytics.satisfaction.toFixed(1)} / 5` },
         ] : [
-          { label: 'Top Client', value: 'Sarah Johnson (8 visits)' },
-          { label: 'Second Most', value: 'Michael Brown (6 visits)' },
-          { label: 'Third Most', value: 'Lisa Davis (5 visits)' },
-          { label: 'Avg Spend/Client', value: formatCurrency(450) },
-          { label: 'Satisfaction Rate', value: '92.3%' },
+          { label: 'Completed clients', value: 'No completed visits in this period' },
+          { label: 'Repeat client rate', value: `${appointmentAnalytics.repeatClientRate.toFixed(1)}%` },
+          { label: 'Satisfaction score', value: appointmentAnalytics.satisfaction == null
+            ? 'Not rated'
+            : `${appointmentAnalytics.satisfaction.toFixed(1)} / 5` },
         ],
         icon: 'account-group',
         color: ACCENT_BLUE
       },
       orderPerformance: {
         title: 'Order Performance Overview',
-        mainValue: analyticsData.orderPerformance.toString(),
+        mainValue: appointmentAnalytics.total.toString(),
         details: [
-          { label: 'Total Orders', value: analyticsData.orderPerformance.toString() },
-          { label: 'Pending Orders', value: Math.round(analyticsData.orderPerformance * 0.08).toString() },
-          { label: 'In Progress', value: Math.round(analyticsData.orderPerformance * 0.22).toString() },
-          { label: 'Avg Transaction', value: formatCurrencyWithConverter(analyticsData.avgTransaction) },
+          { label: 'Appointments in period', value: appointmentAnalytics.total.toString() },
+          { label: 'Pending appointments', value: appointmentAnalytics.pending.toString() },
+          { label: 'In progress / assigned', value: appointmentAnalytics.inProgress.toString() },
+          { label: 'Completed appointments', value: appointmentAnalytics.completed.toString() },
+          { label: 'Cancelled appointments', value: appointmentAnalytics.cancelled.toString() },
         ],
         icon: 'receipt-text',
         color: ACCENT_BLUE
@@ -1421,26 +1306,21 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
       </TouchableOpacity>
 
       <TouchableOpacity 
-        style={[styles.analyticsPill, loadingClientData && { opacity: 0.6 }]}
+        style={styles.analyticsPill}
         onPress={() => handleCardPress('clientPerformance')}
         activeOpacity={0.8}
-        disabled={loadingClientData}
       >
         <View style={styles.analyticsPillContent}>
           <View style={styles.analyticsPillLeft}>
             <Text style={styles.analyticsPillLabel}>
-              Client Performance {loadingClientData && '...'}
+              Client Performance
             </Text>
             <View style={styles.analyticsProgress}>
               <View style={[styles.progressBar, { width: `${analyticsData.clientPerformance}%` }]} />
             </View>
           </View>
           <View style={styles.analyticsPillRight}>
-            {loadingClientData ? (
-              <ActivityIndicator size="small" color="#2196F3" />
-            ) : (
-              <MaterialCommunityIcons name="chevron-right" size={20} color="#2196F3" />
-            )}
+            <MaterialCommunityIcons name="chevron-right" size={20} color="#2196F3" />
           </View>
         </View>
       </TouchableOpacity>
@@ -1453,8 +1333,12 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         <View style={styles.analyticsPillContent}>
           <View style={styles.analyticsPillLeft}>
             <Text style={styles.analyticsPillLabel}>Order Performance</Text>
-            <View style={styles.analyticsProgress}>
-              <View style={[styles.progressBar, { width: dataCleared ? '0%' : '78%' }]} />
+          <View style={styles.analyticsProgress}>
+              <View style={[styles.progressBar, {
+                width: `${appointmentAnalytics.total > 0
+                  ? (appointmentAnalytics.completed / appointmentAnalytics.total) * 100
+                  : 0}%`,
+              }]} />
             </View>
           </View>
           <View style={styles.analyticsPillRight}>
@@ -1643,9 +1527,13 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                 }
               ];
             })().map((target) => {
-              const progress = target.maxValue 
-                ? (target.current / target.maxValue) * 100
-                : (target.current / target.target) * 100;
+              const progress = target.current == null
+                ? 0
+                : target.maxValue
+                  ? (target.current / target.maxValue) * 100
+                  : target.target > 0
+                    ? (target.current / target.target) * 100
+                    : 0;
               
               return (
                 <View key={target.id} style={styles.targetPillContainer}>
@@ -1658,10 +1546,19 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                       </View>
                       
                       <Text style={styles.targetPillGoal}>
-                        Goal: {target.isPercentage 
+                        Now: {target.current == null
+                          ? 'Not rated'
+                          : target.isPercentage
+                            ? `${target.current.toFixed(1)}%`
+                            : target.maxValue
+                              ? `${target.current.toFixed(1)}/5`
+                              : target.title === 'Revenue Goal'
+                                ? formatCurrencyWithConverter(target.current)
+                                : target.current
+                        }  ·  Goal: {target.isPercentage
                           ? `${target.target}%`
                           : target.maxValue 
-                            ? target.target.toFixed(1)
+                            ? `${target.target.toFixed(1)}/5`
                             : target.target > 1000 
                               ? formatCurrencyWithConverter(target.target)
                               : target.target
@@ -1674,7 +1571,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                           style={[
                             styles.targetPillProgressFill, 
                             { 
-                              width: `${Math.min(progress, 100)}%`,
+                              width: `${Math.max(0, Math.min(progress, 100))}%`,
                               backgroundColor: '#2196F3' 
                             }
                           ]} 
@@ -2041,6 +1938,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 15,
   },
+  detailsModalContent: {
+    maxHeight: '100%',
+    overflow: 'hidden',
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -2099,22 +2000,32 @@ const styles = StyleSheet.create({
   modalBody: {
     padding: 20,
   },
+  detailsModalBody: {
+    flex: 1,
+    flexGrow: 1,
+    flexShrink: 1,
+  },
   modalDetailItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#f8f9fa',
+    gap: 12,
   },
   modalDetailLabel: {
     fontSize: 16,
     color: '#2c3e50',
+    flex: 1,
+    flexShrink: 1,
   },
   modalDetailValue: {
     fontSize: 16,
     fontWeight: '600',
     color: '#2c3e50',
+    flexShrink: 1,
+    textAlign: 'right',
   },
   modalButton: {
     margin: 20,
