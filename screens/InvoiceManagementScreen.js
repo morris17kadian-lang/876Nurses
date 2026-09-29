@@ -806,7 +806,7 @@ export default function InvoiceManagementScreen({ navigation }) {
               activeOpacity={selectedInvoice ? 0.7 : 1}
               disabled={!selectedInvoice}
             >
-              <MaterialCommunityIcons name="file-pdf-box" size={18} color={selectedInvoice ? COLORS.primary : '#999'} />
+              <MaterialCommunityIcons name="share-variant" size={20} color={COLORS.white} />
             </TouchableWeb>
           </View>
           
@@ -971,7 +971,7 @@ export default function InvoiceManagementScreen({ navigation }) {
                     {/* Invoice Totals */}
                     <View style={styles.pdfTotalsSection}>
                       <View style={styles.pdfTotalRow}>
-                        <Text style={styles.pdfTotalLabel}>Deposit:</Text>
+                        <Text style={styles.pdfTotalLabel}>Subtotal:</Text>
                         <Text style={styles.pdfTotalValue}>
                           {formatCurrency(
                             selectedInvoice.subtotal || selectedInvoice.total || selectedInvoice.amount || 0,

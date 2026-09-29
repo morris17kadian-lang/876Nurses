@@ -2138,6 +2138,16 @@ class InvoiceService {
       const invoiceDataForPdf = {
         ...invoice,
         invoiceId: invoice.invoiceId || invoice.invoiceNumber || invoiceId,
+        issueDate: invoice.issueDate || invoice.date || invoice.serviceDate || invoice.createdAt || new Date().toISOString(),
+        dueDate:
+          invoice.dueDate ||
+          invoice.paymentDueDate ||
+          invoice.billingDueDate ||
+          invoice.issueDate ||
+          invoice.date ||
+          invoice.serviceDate ||
+          invoice.createdAt ||
+          new Date().toISOString(),
         items,
       };
 

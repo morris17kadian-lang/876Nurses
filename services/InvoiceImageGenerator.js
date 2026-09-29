@@ -269,7 +269,16 @@ class InvoiceImageGenerator {
       if (value instanceof Date) {
         date = value;
       } else if (typeof value === 'string' || typeof value === 'number') {
-        date = new Date(value);
+        const text = String(value).trim();
+        const formattedDate = text.match(/^([A-Za-z]{3})\s+(\d{1,2}),\s*(\d{4})$/);
+        if (formattedDate) {
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const monthIndex = monthNames.indexOf(formattedDate[1]);
+          if (monthIndex >= 0) {
+            date = new Date(Number(formattedDate[3]), monthIndex, Number(formattedDate[2]));
+          }
+        }
+        if (!date) date = new Date(value);
       } else if (typeof value === 'object') {
         if (typeof value.toDate === 'function') {
           date = value.toDate();
@@ -328,7 +337,14 @@ class InvoiceImageGenerator {
       (invoiceData?.invoiceId || invoiceData?.invoiceNumber || '');
 
     const issueDateDisplay = formatDate(invoiceData?.issueDate || invoiceData?.date || invoiceData?.createdAt);
-    const dueDateDisplay = formatDate(invoiceData?.dueDate);
+    const dueDateDisplay = formatDate(
+      invoiceData?.dueDate ||
+      invoiceData?.paymentDueDate ||
+      invoiceData?.billingDueDate ||
+      invoiceData?.issueDate ||
+      invoiceData?.date ||
+      invoiceData?.createdAt
+    );
 
     const periodStart = invoiceData?.periodStart || invoiceData?.billingPeriodStart || invoiceData?.recurringPeriodStart;
     const periodEnd = invoiceData?.periodEnd || invoiceData?.billingPeriodEnd || invoiceData?.recurringPeriodEnd;
@@ -411,7 +427,7 @@ class InvoiceImageGenerator {
         width: 612px;
         min-height: 792px;
       }
-      .invoicePreviewCard { border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px; }
+      .invoicePreviewCard { border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px; min-height: 736px; display: flex; flex-direction: column; }
       .headerLogoWrap { display: flex; justify-content: center; align-items: center; margin-bottom: 10px; }
       .headerLogo { height: 34px; width: auto; object-fit: contain; }
       .pdfHeaderTop { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
@@ -447,6 +463,9 @@ class InvoiceImageGenerator {
       .paidStamp { margin-top: 10px; border: 2px solid #16a34a; border-radius: 8px; padding: 8px; text-align: center; }
       .paidStampText { font-size: 18px; font-weight: 900; color: #16a34a; letter-spacing: 2px; }
       .paidMeta { font-size: 11px; color: #166534; margin-top: 4px; }
+      .pdfFooter { margin-top: auto; padding-top: 24px; text-align: center; }
+      .pdfFooterTitle { color: #1d8fe1; font-size: 13px; font-weight: 800; }
+      .pdfFooterText { color: #6b7280; font-size: 10px; margin-top: 5px; }
     </style>
   </head>
   <body>
@@ -513,7 +532,7 @@ class InvoiceImageGenerator {
         </div>
         <div class="pdfTotalsSection">
           <div class="pdfTotalRow">
-            <div class="pdfTotalLabel">Deposit:</div>
+            <div class="pdfTotalLabel">Subtotal:</div>
               <div class="pdfTotalValue">${safeText(formatCurrency(invoiceData.subtotal || invoiceData.amount || invoiceData.total || 0))}</div>
           </div>
           ${invoiceData?.paymentStatus === 'partial' && Number(invoiceData?.paidAmount) > 0 ? `
@@ -534,6 +553,10 @@ class InvoiceImageGenerator {
             </div>
           ` : ''}
         </div>
+      </div>
+      <div class="pdfFooter">
+        <div class="pdfFooterTitle">Thank you for choosing 876 Nurses Home Care Services</div>
+        <div class="pdfFooterText">This invoice was generated electronically and is valid without a signature.</div>
       </div>
     </div>
   </body>
