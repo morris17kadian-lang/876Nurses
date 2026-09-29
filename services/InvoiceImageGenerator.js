@@ -415,19 +415,18 @@ class InvoiceImageGenerator {
 <html>
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       @page { size: letter; margin: 0; }
-      html, body { width: 612px; min-height: 792px; }
+      html, body { width: 8.5in; min-height: 11in; }
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
         color: #1f2937;
         background: #ffffff;
-        padding: 28px;
-        width: 612px;
-        min-height: 792px;
+        padding: 0.35in;
       }
-      .invoicePreviewCard { border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px; min-height: 736px; display: flex; flex-direction: column; }
+      .invoicePreviewCard { width: 100%; border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px; min-height: 10.3in; display: flex; flex-direction: column; }
       .headerLogoWrap { display: flex; justify-content: center; align-items: center; margin-bottom: 10px; }
       .headerLogo { height: 34px; width: auto; object-fit: contain; }
       .pdfHeaderTop { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
