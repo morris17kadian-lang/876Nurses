@@ -1549,6 +1549,89 @@ exports.getGuestAppointmentUpdates = onCall({
   return { appointments: updates };
 });
 
+// Guests cannot query the invoices collection directly. Return invoices only
+// after the supplied patient ID or email matches the requested appointment.
+exports.getGuestAppointmentInvoices = onCall({
+  region: 'us-central1',
+  serviceAccount: getRuntimeServiceAccountEmail(),
+}, async (request) => {
+  const payload = request.data || {};
+  const appointmentIds = Array.isArray(payload.appointmentIds)
+    ? [...new Set(payload.appointmentIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 20)
+    : [];
+  const patientId = String(payload.patientId || '').trim().toLowerCase();
+  const email = String(payload.email || '').trim().toLowerCase();
+
+  if (!appointmentIds.length || (!patientId && !email)) {
+    throw new HttpsError('invalid-argument', 'Guest identity and appointment IDs are required.');
+  }
+
+  const db = admin.firestore();
+  const authorizedAppointmentIds = new Set();
+  const linkedInvoiceIds = new Set();
+
+  for (const appointmentId of appointmentIds) {
+    let snapshot = await db.collection('appointments').doc(appointmentId).get();
+    if (!snapshot.exists) snapshot = await db.collection('shiftRequests').doc(appointmentId).get();
+    if (!snapshot.exists) continue;
+
+    const appointment = snapshot.data() || {};
+    const storedIds = [appointment.patientId, appointment.clientId, appointment.userId]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    const storedEmails = [
+      appointment.patientEmail,
+      appointment.clientEmail,
+      appointment.email,
+      appointment.patient?.email,
+      appointment.clientSnapshot?.email,
+      appointment.patientSnapshot?.email,
+    ]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    const identityMatches = Boolean(
+      (patientId && storedIds.includes(patientId)) ||
+      (email && storedEmails.includes(email))
+    );
+    if (!identityMatches) continue;
+
+    authorizedAppointmentIds.add(snapshot.id);
+    [
+      appointment.invoiceId,
+      appointment.finalInvoiceId,
+      appointment.lastVisitInvoiceId,
+      appointment.latestInvoiceId,
+      ...(Array.isArray(appointment.invoiceIds) ? appointment.invoiceIds : []),
+    ].forEach((value) => {
+      const normalized = String(value || '').trim();
+      if (normalized) linkedInvoiceIds.add(normalized);
+    });
+  }
+
+  if (!authorizedAppointmentIds.size) return { invoices: [] };
+
+  const invoices = new Map();
+  const addInvoices = (snapshot) => snapshot.docs.forEach((invoiceDoc) => {
+    invoices.set(invoiceDoc.id, { firestoreId: invoiceDoc.id, ...invoiceDoc.data() });
+  });
+
+  for (const appointmentId of authorizedAppointmentIds) {
+    for (const field of ['appointmentId', 'relatedAppointmentId', 'shiftRequestId', 'visitKey']) {
+      const snapshot = await db.collection('invoices').where(field, '==', appointmentId).limit(20).get();
+      addInvoices(snapshot);
+    }
+  }
+
+  for (const invoiceId of linkedInvoiceIds) {
+    const direct = await db.collection('invoices').doc(invoiceId).get();
+    if (direct.exists) invoices.set(direct.id, { firestoreId: direct.id, ...direct.data() });
+    const snapshot = await db.collection('invoices').where('invoiceId', '==', invoiceId).limit(5).get();
+    addInvoices(snapshot);
+  }
+
+  return { invoices: Array.from(invoices.values()) };
+});
+
 exports.sendWelcomeEmailOnAuthCreate = functionsV1
   .region('us-central1')
   .runWith({ secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET] })

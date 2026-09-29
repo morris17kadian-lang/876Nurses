@@ -690,6 +690,9 @@ export default function AppointmentsScreen({ navigation, route }) {
     return stringValue ? stringValue.toLowerCase() : null;
   };
 
+  // Get patient ID first (fall back to persisted guest identity when there's no authenticated user)
+  const patientId = user?.id || guestIdentity?.patientId;
+
   const patientIdCandidates = React.useMemo(() => {
     const ids = new Set();
     const addId = (val) => {
@@ -969,10 +972,33 @@ export default function AppointmentsScreen({ navigation, route }) {
       };
 
       // No tap-to-generate invoices: only view an existing invoice if it exists.
-      const allInvoices = await InvoiceService.getAllInvoices();
+      let allInvoices = await InvoiceService.getAllInvoices();
+      if (!user && (guestIdentity?.patientId || guestIdentity?.email)) {
+        const guestInvoices = await ApiService.getGuestAppointmentInvoices({
+          appointmentIds: [resolvedAppointmentId, resolvedShiftId].filter(Boolean),
+          patientId: guestIdentity?.patientId,
+          email: guestIdentity?.email,
+        });
+        allInvoices = [...(allInvoices || []), ...(guestInvoices || [])];
+      }
+      const linkedInvoiceIds = [
+        appointment?.invoiceId,
+        appointment?.finalInvoiceId,
+        appointment?.lastVisitInvoiceId,
+      ]
+        .filter(Boolean)
+        .map((value) => InvoiceService.normalizeInvoiceId(String(value)));
       const matching = (allInvoices || []).filter((inv) => {
-        const invAppointmentId = String(inv?.appointmentId || inv?.relatedAppointmentId || inv?.appointmentID || '');
-        return invAppointmentId && invAppointmentId === String(resolvedAppointmentId);
+        const invAppointmentIds = [
+          inv?.appointmentId,
+          inv?.relatedAppointmentId,
+          inv?.appointmentID,
+          inv?.shiftRequestId,
+        ].filter(Boolean).map(String);
+        const normalizedInvoiceId = InvoiceService.normalizeInvoiceId(inv?.invoiceId || inv?.invoiceNumber || '');
+        return invAppointmentIds.includes(String(resolvedAppointmentId)) ||
+          invAppointmentIds.includes(String(resolvedShiftId)) ||
+          (normalizedInvoiceId && linkedInvoiceIds.includes(normalizedInvoiceId));
       });
 
       const invoice = matching.length > 0 ? matching[0] : null;
@@ -1147,6 +1173,16 @@ export default function AppointmentsScreen({ navigation, route }) {
           .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
           .map((v) => String(v));
 
+        const linkedInvoiceIds = [
+          selectedAppointment?.invoiceId,
+          selectedAppointment?.finalInvoiceId,
+          selectedAppointment?.lastVisitInvoiceId,
+          selectedAppointment?.latestInvoiceId,
+          ...(Array.isArray(selectedAppointment?.invoiceIds) ? selectedAppointment.invoiceIds : []),
+        ]
+          .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
+          .map((v) => InvoiceService.normalizeInvoiceId(String(v)));
+
         const collectPrimitiveValuesDeep = (input, maxDepth = 3) => {
           const out = new Set();
           const visited = new Set();
@@ -1215,12 +1251,26 @@ export default function AppointmentsScreen({ navigation, route }) {
 
         // Fetch fresh data directly from service (backend) to ensure status is up to date
         // This mirrors the logic in AdminClientsScreen handleShowClientDetails
-        const allInvoices = await InvoiceService.getAllInvoices();
+        let allInvoices = await InvoiceService.getAllInvoices();
+        if (!user && (guestIdentity?.patientId || guestIdentity?.email)) {
+          const guestInvoices = await ApiService.getGuestAppointmentInvoices({
+            appointmentIds: appointmentIdentifiers.slice(0, 20),
+            patientId: guestIdentity?.patientId,
+            email: guestIdentity?.email,
+          });
+          const invoiceMap = new Map();
+          [...(allInvoices || []), ...(guestInvoices || [])].forEach((invoice) => {
+            const key = invoice?.firestoreId || invoice?.invoiceId || invoice?.invoiceNumber;
+            if (key) invoiceMap.set(String(key), invoice);
+          });
+          allInvoices = Array.from(invoiceMap.values());
+        }
 
         const appointmentClientEmails = [
           selectedAppointment?.patientEmail,
           selectedAppointment?.clientEmail,
           user?.email,
+          guestIdentity?.email,
         ]
           .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
           .map((v) => String(v).trim().toLowerCase());
@@ -1246,6 +1296,9 @@ export default function AppointmentsScreen({ navigation, route }) {
         const normalizeText = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
         let matchingInvoices = allInvoices.filter((inv) => {
+          const normalizedInvoiceId = InvoiceService.normalizeInvoiceId(inv?.invoiceId || inv?.invoiceNumber || '');
+          if (normalizedInvoiceId && linkedInvoiceIds.includes(normalizedInvoiceId)) return true;
+
           const invoiceIds = [
             inv?.relatedAppointmentId,
             inv?.appointmentId,
@@ -1438,10 +1491,7 @@ export default function AppointmentsScreen({ navigation, route }) {
     if (detailsModalVisible || recurringShiftDetailsModalVisible) {
       loadInvoicesForAppointment();
     }
-  }, [activeTab, selectedAppointment, detailsModalVisible, recurringShiftDetailsModalVisible]);
-
-  // Get patient ID first (fall back to persisted guest identity when there's no authenticated user)
-  const patientId = user?.id || guestIdentity?.patientId;
+  }, [activeTab, selectedAppointment, detailsModalVisible, recurringShiftDetailsModalVisible, guestIdentity?.email]);
   
   // Get real appointment data from context
   const upcomingAppointments = getUpcomingAppointments(patientId);

@@ -1651,6 +1651,22 @@ class InvoiceService {
           appointmentData.recurringPeriodEnd
       );
 
+      const sourceClientId = appointmentData.patientId || appointmentData.clientId || appointmentData.userId || null;
+      const explicitAccountType = String(
+        appointmentData.clientAccountType ||
+        appointmentData.accountType ||
+        appointmentData.customerType ||
+        ''
+      ).trim().toLowerCase();
+      const guestIdentifier = String(sourceClientId || '').trim().toLowerCase();
+      const isGuestBooking =
+        appointmentData.isGuestBooking === true ||
+        appointmentData.isGuest === true ||
+        appointmentData.guestBooking === true ||
+        explicitAccountType === 'guest' ||
+        guestIdentifier.startsWith('guest_') ||
+        guestIdentifier.includes('@');
+
       const invoiceData = {
         invoiceId,
         clientName: appointmentData.patientName || appointmentData.clientName || 'Client',
@@ -1673,8 +1689,10 @@ class InvoiceService {
         relatedAppointmentId: appointmentData.relatedAppointmentId || appointmentData.appointmentId || appointmentData.id, // For backend compatibility
         shiftRequestId: appointmentData.shiftRequestId || null,
         visitKey: appointmentData.visitKey || null,
-        patientId: appointmentData.patientId || appointmentData.clientId || appointmentData.userId || null,
-        clientId: appointmentData.patientId || appointmentData.clientId || appointmentData.userId || null,
+        patientId: sourceClientId,
+        clientId: sourceClientId,
+        isGuestBooking,
+        clientAccountType: isGuestBooking ? 'guest' : 'registered',
         // Add items array for compatibility with InvoiceImageGenerator
         items: [{
           description: serviceType,

@@ -438,6 +438,26 @@ class ApiService {
     }
   }
 
+  static async getGuestAppointmentInvoices({ appointmentIds = [], patientId = null, email = null } = {}) {
+    const ids = Array.isArray(appointmentIds)
+      ? [...new Set(appointmentIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 20)
+      : [];
+    if (!ids.length || (!patientId && !email)) return [];
+
+    try {
+      const getGuestInvoices = httpsCallable(getFunctions(app, 'us-central1'), 'getGuestAppointmentInvoices');
+      const result = await getGuestInvoices({
+        appointmentIds: ids,
+        patientId: patientId ? String(patientId) : null,
+        email: email ? String(email) : null,
+      });
+      return Array.isArray(result?.data?.invoices) ? result.data.invoices : [];
+    } catch (error) {
+      console.warn('Could not load guest appointment invoices:', error?.message || error);
+      return [];
+    }
+  }
+
   static async createAppointment(appointmentData) {
     try {
       const sanitized = ApiService.sanitizeData(appointmentData) || {};

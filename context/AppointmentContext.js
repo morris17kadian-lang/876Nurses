@@ -749,6 +749,8 @@ export const AppointmentProvider = ({ children }) => {
         status: 'pending', // Ensure status is set so it appears in Admin dashboard
         priority: 'medium',
         estimatedDuration: 60, // Default 1 hour (60 minutes)
+        isGuestBooking: !user,
+        clientAccountType: !user ? 'guest' : 'registered',
 
         // Preferred/requested nurse (patient-selected at booking)
         preferredNurseId: preferredNurseId,
@@ -812,6 +814,8 @@ export const AppointmentProvider = ({ children }) => {
           notes: created.notes || appointmentData.notes || '',
           patientAlerts: created.patientAlerts || appointmentData.patientAlerts || null,
           status: created.status || 'pending',
+          isGuestBooking: created.isGuestBooking ?? !user,
+          clientAccountType: created.clientAccountType || (!user ? 'guest' : 'registered'),
           nurseId: created.nurseId || null,
           nurseName: created.nurseName || null,
           // Preserve preferred/requested nurse selection for Pending details modal.

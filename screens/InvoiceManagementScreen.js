@@ -207,6 +207,38 @@ export default function InvoiceManagementScreen({ navigation }) {
     return fallback;
   };
 
+  const getClientAccountType = React.useCallback((invoice) => {
+    const explicitType = String(
+      invoice?.clientAccountType ||
+      invoice?.accountType ||
+      invoice?.customerType ||
+      ''
+    ).trim().toLowerCase();
+    const clientId = String(invoice?.clientId || invoice?.patientId || invoice?.userId || '').trim().toLowerCase();
+    const appointmentId = invoice?.relatedAppointmentId || invoice?.appointmentId || invoice?.shiftRequestId;
+    const linkedAppointment = Array.isArray(appointments?.appointments)
+      ? appointments.appointments.find((appointment) => {
+          const ids = [appointment?.id, appointment?.appointmentId, appointment?.shiftRequestId]
+            .filter(Boolean)
+            .map(String);
+          return appointmentId != null && ids.includes(String(appointmentId));
+        })
+      : null;
+
+    const isGuest =
+      invoice?.isGuestBooking === true ||
+      invoice?.isGuest === true ||
+      invoice?.guestBooking === true ||
+      linkedAppointment?.isGuestBooking === true ||
+      explicitType === 'guest' ||
+      clientId.startsWith('guest_') ||
+      clientId.includes('@');
+
+    return isGuest
+      ? { key: 'guest', label: 'Guest' }
+      : { key: 'registered', label: 'Account Holder' };
+  }, [appointments?.appointments]);
+
   const [companyDetails, setCompanyDetails] = useState({
     companyName: '876 Nurses Home Care Services Limited',
     fullName: '876 NURSES HOME CARE SERVICES LIMITED',
@@ -564,19 +596,24 @@ export default function InvoiceManagementScreen({ navigation }) {
       filtered = filtered.filter(invoice => invoice.status === filterStatus);
     }
 
-    // Search by client name, patient name, or invoice ID
+    // Search by client name, invoice ID, or account type.
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
-      filtered = filtered.filter(invoice => 
-        invoice.clientName?.toLowerCase().includes(query) ||
-        invoice.patientName?.toLowerCase().includes(query) ||
-        invoice.invoiceId?.toLowerCase().includes(query) ||
-        invoice.relatedOrderId?.toLowerCase().includes(query)
-      );
+      filtered = filtered.filter((invoice) => {
+        const accountType = getClientAccountType(invoice);
+        return [
+          invoice.clientName,
+          invoice.patientName,
+          invoice.invoiceId,
+          invoice.relatedOrderId,
+          accountType.label,
+          accountType.key,
+        ].some((value) => String(value || '').toLowerCase().includes(query));
+      });
     }
 
     return filtered;
-  }, [invoices, filterStatus, searchQuery]);
+  }, [invoices, filterStatus, searchQuery, getClientAccountType]);
 
   const handleStatusUpdate = async (invoiceId, newStatus, paymentMethod = null) => {
     try {
@@ -1042,6 +1079,27 @@ export default function InvoiceManagementScreen({ navigation }) {
                                 {invoice.patientName || invoice.clientName}
                               </Text>
                             )}
+                            {invoice.service !== 'Store Purchase' && (() => {
+                              const accountType = getClientAccountType(invoice);
+                              return (
+                                <View style={[
+                                  styles.accountTypeBadge,
+                                  accountType.key === 'guest' ? styles.guestAccountBadge : styles.registeredAccountBadge,
+                                ]}>
+                                  <MaterialCommunityIcons
+                                    name={accountType.key === 'guest' ? 'account-clock-outline' : 'account-check-outline'}
+                                    size={12}
+                                    color={accountType.key === 'guest' ? '#C75B00' : '#087F5B'}
+                                  />
+                                  <Text style={[
+                                    styles.accountTypeBadgeText,
+                                    accountType.key === 'guest' ? styles.guestAccountBadgeText : styles.registeredAccountBadgeText,
+                                  ]}>
+                                    {accountType.label}
+                                  </Text>
+                                </View>
+                              );
+                            })()}
                           </View>
                         </View>
                         <View style={styles.invoiceActions}>
@@ -1138,6 +1196,10 @@ export default function InvoiceManagementScreen({ navigation }) {
 
                   <View style={styles.detailsSection}>
                     <Text style={styles.sectionTitle}>Client Information</Text>
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Account:</Text>
+                      <Text style={styles.detailValue}>{getClientAccountType(selectedInvoice).label}</Text>
+                    </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Name:</Text>
                       <Text style={styles.detailValue}>{toDisplayText(selectedInvoice.clientName, '')}</Text>
@@ -1980,6 +2042,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'Poppins_500Medium',
     color: COLORS.textLight,
+  },
+  accountTypeBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  guestAccountBadge: {
+    backgroundColor: '#FFF4E6',
+    borderColor: '#FFD8A8',
+  },
+  registeredAccountBadge: {
+    backgroundColor: '#E6FCF5',
+    borderColor: '#96F2D7',
+  },
+  accountTypeBadgeText: {
+    fontSize: 10,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  guestAccountBadgeText: {
+    color: '#C75B00',
+  },
+  registeredAccountBadgeText: {
+    color: '#087F5B',
   },
   clientName: {
     fontSize: 14,
