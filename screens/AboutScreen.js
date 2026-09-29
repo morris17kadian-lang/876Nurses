@@ -12,9 +12,12 @@ import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context'
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, GRADIENTS, SPACING, CONTACT_INFO, COMPANY_INFO } from '../constants';
+import Constants from 'expo-constants';
 
 export default function AboutScreen({ navigation }) {
   const insets = useSafeAreaInsets();
+  const appVersion = Constants.expoConfig?.version || '1.0.3';
+  const currentYear = new Date().getFullYear();
 
   const [expandedSections, setExpandedSections] = useState({
     mission: true,
@@ -236,9 +239,9 @@ export default function AboutScreen({ navigation }) {
         {/* Copyright */}
         <View style={styles.footer}>
           <Text style={styles.copyright}>
-            © 2025 {COMPANY_INFO.legalName}. All rights reserved.
+            © {currentYear} {COMPANY_INFO.legalName}. All rights reserved.
           </Text>
-          <Text style={styles.version}>Version 1.0.0</Text>
+          <Text style={styles.version}>Version {appVersion}</Text>
           <Text style={styles.footerText}>
             Made with ❤️ in Jamaica
           </Text>

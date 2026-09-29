@@ -101,7 +101,7 @@ class PayslipGenerator {
     // Build service rows
     let serviceRows = '';
     
-    if (parseFloat(payslip.regularHours || 0) > 0) {
+    if (payslip.shiftPay === undefined && parseFloat(payslip.regularHours || 0) > 0) {
       serviceRows += `
         <tr>
           <td style="padding: 12px; border-bottom: 1px solid #e0e0e0;">Home Care Assistance</td>
@@ -110,6 +110,16 @@ class PayslipGenerator {
           <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: right; font-weight: 600;">${formatCurrency(payslip.regularPay)}</td>
         </tr>
       `;
+    }
+
+    if (payslip.shiftPay !== undefined) {
+      const addRow = (description, hours, rate, amount) => {
+        if (parseFloat(amount || 0) <= 0) return '';
+        return `<tr><td style="padding: 12px; border-bottom: 1px solid #e0e0e0;">${description}</td><td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: center;">${hours}</td><td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: center;">${rate}</td><td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: right; font-weight: 600;">${formatCurrency(amount)}</td></tr>`;
+      };
+      serviceRows += addRow(`Completed shifts (${payslip.shiftsCompleted || 0})`, payslip.shiftHours || 0, 'Shift rates', payslip.shiftPay);
+      serviceRows += addRow('Completed appointments', payslip.appointmentHours || 0, formatCurrency(payslip.hourlyRate), payslip.appointmentPay);
+      serviceRows += addRow('Public holiday premium', '—', '—', payslip.holidayPremium);
     }
 
     if (parseFloat(payslip.overtimeHours || 0) > 0) {
@@ -123,13 +133,13 @@ class PayslipGenerator {
       `;
     }
 
-    if (parseFloat(payslip.regularHours || 0) === 0) {
+    if (payslip.shiftPay === undefined && parseFloat(payslip.regularHours || 0) === 0) {
       serviceRows += `
         <tr>
-          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0;">Home Care Assistance</td>
-          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: center;">${payslip.hoursWorked || '0.00'}</td>
-          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: center;">${formatCurrency(payslip.hourlyRate || 0)}</td>
-          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: right; font-weight: 600;">${formatCurrency(payslip.grossPay)}</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0;">${payslip.payType === 'salary' ? 'Salary' : 'Recorded work'}</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: center;">${payslip.hoursWorked || '—'}</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: center;">${payslip.hourlyRate ? formatCurrency(payslip.hourlyRate) : '—'}</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e0e0e0; text-align: right; font-weight: 600;">${formatCurrency(payslip.basePay ?? payslip.grossPay)}</td>
         </tr>
       `;
     }
@@ -385,11 +395,15 @@ class PayslipGenerator {
           <div class="payment-section">
             <div class="total-section">
               <div class="total-row">
-                <span class="total-label">Subtotal:</span>
-                <span class="total-value">${formatCurrency(payslip.grossPay)}</span>
+                <span class="total-label">Base Pay:</span>
+                <span class="total-value">${formatCurrency(payslip.staffType === 'nursing' ? payslip.regularPay : payslip.basePay)}</span>
               </div>
+              ${Object.entries(payslip.allowances || {}).filter(([, amount]) => parseFloat(amount || 0) > 0).map(([name, amount]) => `
+                <div class="total-row"><span class="total-label">${name.replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase())} allowance:</span><span class="total-value">+${formatCurrency(amount)}</span></div>
+              `).join('')}
+              <div class="total-row"><span class="total-label">Gross Pay:</span><span class="total-value">${formatCurrency(payslip.grossPay)}</span></div>
               <div class="final-total-row">
-                <span class="final-total-label">Total Amount:</span>
+                <span class="final-total-label">Net Pay:</span>
                 <span class="final-total-value">${formatCurrency(payslip.netPay)}</span>
               </div>
 

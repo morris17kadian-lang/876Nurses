@@ -1,17 +1,15 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  Switch,
   Alert,
   Image,
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import * as Location from 'expo-location';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -20,105 +18,11 @@ import { useAuth } from '../context/AuthContext';
 import ApiService from '../services/ApiService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import FirebaseService from '../services/FirebaseService';
-import InvoiceService from '../services/InvoiceService';
-import { auth } from '../config/firebase';
-import { deleteUser as deleteAuthUser } from 'firebase/auth';
 
 
 export default function PrivacySecurityScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
-  const [settings, setSettings] = useState({
-    dataCollection: true,
-    locationTracking: false,
-    twoFactorAuth: false,
-  });
-
-  // Load privacy settings from backend on mount
-  useEffect(() => {
-    loadPrivacySettings();
-  }, [user]);
-
-  const loadPrivacySettings = async () => {
-    try {
-      // Try backend first
-      if (user?.id) {
-        const backendSettings = await ApiService.getPrivacySettings(user.id);
-        if (backendSettings) {
-          setSettings({
-            dataCollection: backendSettings.dataCollection ?? true,
-            locationTracking: backendSettings.locationTracking ?? false,
-            twoFactorAuth: backendSettings.twoFactorAuth ?? false,
-          });
-          return;
-        }
-      }
-
-      // Fallback to AsyncStorage
-      const stored = await AsyncStorage.getItem('privacySettings');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setSettings(prev => ({ ...prev, ...parsed }));
-      }
-    } catch (error) {
-      // Error loading privacy settings
-    }
-  };
-
-  const handleToggle = async (key, value) => {
-    if (key === 'locationTracking' && value === true) {
-      try {
-        const servicesEnabled = await Location.hasServicesEnabledAsync();
-        if (!servicesEnabled) {
-          Alert.alert(
-            'Location Services Off',
-            'Please enable Location Services on your device to turn on Location Tracking.'
-          );
-          return;
-        }
-
-        const permission = await Location.requestForegroundPermissionsAsync();
-        if (permission.status !== 'granted') {
-          Alert.alert(
-            'Permission Required',
-            'Location permission is required to enable Location Tracking.'
-          );
-          return;
-        }
-
-        // Trigger a one-time read so the toggle is genuinely functional.
-        await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      } catch (error) {
-        Alert.alert('Error', 'Unable to enable Location Tracking on this device.');
-        return;
-      }
-    }
-
-    const newSettings = { ...settings, [key]: value };
-    setSettings(newSettings);
-
-    try {
-      // Try backend first
-      if (user?.id) {
-        await ApiService.updatePrivacySettings(user.id, { [key]: value });
-      }
-
-      // Always save to AsyncStorage as backup
-      await AsyncStorage.setItem('privacySettings', JSON.stringify(newSettings));
-
-      const messages = {
-        dataCollection: value ? 'Data collection enabled for better service' : 'Data collection disabled',
-        locationTracking: value ? 'Location services enabled' : 'Location services disabled',
-        twoFactorAuth: value ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled',
-      };
-
-      Alert.alert('Updated', messages[key]);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to update privacy setting');
-      // Reset the toggle on error
-      setSettings(prev => ({ ...prev, [key]: !value }));
-    }
-  };
 
   const handleDownloadData = async () => {
     try {
@@ -182,22 +86,7 @@ export default function PrivacySecurityScreen({ navigation }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              await ApiService.createDataRequest({
-                userId: user.id,
-                type: 'deletion',
-                source: 'app',
-              });
-
-              await FirebaseService.deleteUserData(user.id);
-              await FirebaseService.deleteUser(user.id);
-
-              if (auth.currentUser) {
-                try {
-                  await deleteAuthUser(auth.currentUser);
-                } catch (authError) {
-                  // If auth deletion fails, continue cleanup and log out
-                }
-              }
+              await ApiService.deleteOwnAccount();
 
               await AsyncStorage.clear();
               await logout();
@@ -210,21 +99,6 @@ export default function PrivacySecurityScreen({ navigation }) {
       ]
     );
   };
-
-  const SettingItem = ({ icon, title, subtitle, value, onToggle, iconColor = COLORS.primary }) => (
-    <View style={styles.settingItem}>
-      <View style={styles.settingContent}>
-        <Text style={styles.settingTitle}>{title}</Text>
-        <Text style={styles.settingSubtitle}>{subtitle}</Text>
-      </View>
-      <Switch
-        value={value}
-        onValueChange={onToggle}
-        trackColor={{ false: COLORS.border, true: COLORS.primary }}
-        thumbColor={COLORS.white}
-      />
-    </View>
-  );
 
   const InfoCard = ({ title, description }) => (
     <View style={[styles.settingItem, { alignItems: 'flex-start' }]}>
@@ -268,28 +142,6 @@ export default function PrivacySecurityScreen({ navigation }) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Privacy Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Privacy Controls</Text>
-          <View style={styles.settingsCard}>
-            <SettingItem
-              icon="database"
-              title="Data Collection"
-              subtitle="Allow 876Nurses to collect usage data"
-              value={settings.dataCollection}
-              onToggle={(value) => handleToggle('dataCollection', value)}
-            />
-            <View style={styles.divider} />
-            <SettingItem
-              icon="map-marker"
-              title="Location Tracking"
-              subtitle="Allow location access for nearby services"
-              value={settings.locationTracking}
-              onToggle={(value) => handleToggle('locationTracking', value)}
-            />
-          </View>
-        </View>
-
         {/* Security Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Security Settings</Text>
@@ -313,6 +165,15 @@ export default function PrivacySecurityScreen({ navigation }) {
 
         {/* Action Buttons */}
         <View style={styles.section}>
+          <TouchableWeb
+            style={styles.actionButton}
+            onPress={handleDownloadData}
+          >
+            <MaterialCommunityIcons name="download" size={20} color={COLORS.primary} />
+            <Text style={styles.actionButtonText}>Download My Data</Text>
+            <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.textLight} />
+          </TouchableWeb>
+
           <TouchableWeb
             style={styles.actionButton}
             onPress={() => navigation.navigate('Privacy')}

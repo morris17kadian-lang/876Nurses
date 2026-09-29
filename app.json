@@ -63,7 +63,8 @@
     },
     "owner": "kadian",
     "plugins": [
-      "expo-font"
+      "expo-font",
+      ["expo-notifications", { "mode": "production" }]
     ],
     "runtimeVersion": {
       "policy": "appVersion"

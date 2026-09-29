@@ -24,6 +24,7 @@ import FygaroPaymentService from '../services/FygaroPaymentService';
 import ApiService from '../services/ApiService';
 import EmailService from '../services/EmailService';
 import { useAuth } from '../context/AuthContext';
+import SharedSettingsService from '../services/SharedSettingsService';
 
 const InvoiceDisplayScreen = ({ route, navigation }) => {
   const insets = useSafeAreaInsets();
@@ -61,7 +62,7 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
   const formatInvoiceMoney = (value) => {
     const numeric = typeof value === 'string' ? Number(value.replace(/[^0-9.\-]/g, '')) : Number(value);
     const safe = Number.isFinite(numeric) ? numeric : 0;
-    return `$${safe.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return InvoiceService.formatCurrency(safe, invoiceData?.currencyCode || invoiceData?.currency || 'JMD');
   };
 
   // Payment summary helpers
@@ -249,9 +250,9 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
 
   const loadPaymentInfo = async () => {
     try {
-      const stored = await AsyncStorage.getItem('paymentInfo');
-      if (stored) {
-        setPaymentInfo(JSON.parse(stored));
+      const shared = await SharedSettingsService.read('paymentInfo');
+      if (shared) {
+        setPaymentInfo(shared);
       }
     } catch (error) {
       console.error('Error loading payment info:', error);
@@ -260,9 +261,9 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
 
   const loadCompanyDetails = async () => {
     try {
-      const stored = await AsyncStorage.getItem('companyDetails');
-      if (stored) {
-        setCompanyDetails(JSON.parse(stored));
+      const shared = await SharedSettingsService.read('company');
+      if (shared) {
+        setCompanyDetails(shared);
       }
     } catch (error) {
       console.error('Error loading company details:', error);
@@ -349,7 +350,6 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
 
       const role = String(user?.role || '').trim();
       const canWriteInvoices = role === 'admin' || role === 'superAdmin';
-      const canWriteNotifications = canWriteInvoices; // notifications writes are admin-only in Firestore rules
 
       // Update invoice in Firebase
       const updatedInvoice = {
@@ -392,9 +392,10 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
         }
       }
 
-      // Send notification to patient (admin-only write). Safe to skip for patient.
-      if (canWriteNotifications) {
-        await ApiService.createNotification({
+      // Notification delivery is handled by the authenticated Cloud Function.
+      if (user?.id || clientId || invoiceData.clientId) {
+        try {
+          await ApiService.createNotification({
           userId: user?.id || clientId || invoiceData.clientId,
           title: 'Payment Successful',
           message: `Your payment of ${InvoiceService.formatCurrency(amount)} for invoice ${invoiceData.invoiceNumber || invoiceIdentifier} has been processed successfully.${isFullyPaid ? ' Invoice is now fully paid.' : ''}`,
@@ -406,7 +407,10 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
             paymentType: type,
             isFullyPaid: isFullyPaid,
           },
-        });
+          });
+        } catch (notificationError) {
+          console.warn('Payment completed but customer notification failed:', notificationError?.message || notificationError);
+        }
       }
 
       // Send notification to all admins
@@ -414,9 +418,8 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
         const admins = await ApiService.getAdmins();
         const patientName = invoiceData.patientName || invoiceData.clientName || user?.fullName || user?.name || clientName || 'Patient';
         
-        if (canWriteNotifications) {
-          for (const admin of admins) {
-            await ApiService.createNotification({
+        for (const admin of admins) {
+          await ApiService.createNotification({
               userId: admin.id,
               title: 'Invoice Payment Received',
               message: `Payment of ${InvoiceService.formatCurrency(amount)} received for invoice ${invoiceData.invoiceNumber || invoiceIdentifier} from ${patientName}.${isFullyPaid ? ' Invoice is now fully paid.' : ''}`,
@@ -431,8 +434,7 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
                 clientName: patientName,
                 isFullyPaid: isFullyPaid,
               },
-            });
-          }
+          });
         }
       } catch (adminError) {
         console.error('Error notifying admins:', adminError);
@@ -462,10 +464,15 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
     
     setIsSharing(true);
     try {
-      await InvoiceService.shareInvoice(invoiceData);
+      await InvoiceService.shareInvoice({
+        ...invoiceData,
+        companyDetails,
+        paymentInfo,
+        orderDetails,
+      });
     } catch (error) {
       console.error('Error sharing invoice:', error);
-      Alert.alert('Error', 'Failed to share invoice');
+      Alert.alert('Error', `Failed to create or share the current invoice PDF: ${error?.message || 'Please try again.'}`);
     } finally {
       setIsSharing(false);
     }
@@ -672,12 +679,12 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
                     invoiceData.items.map((item, index) => (
                       <View key={index} style={styles.pdfTableRow}>
                         <Text style={[styles.pdfTableCell, { flex: 2 }]}>{item.description}</Text>
-                        <Text style={styles.pdfTableCell}>{item.quantity || item.hours || invoiceData.hours}</Text>
+                        <Text style={styles.pdfTableCell}>{item.quantity || item.hours || invoiceData.hours || 1}</Text>
                         <Text style={styles.pdfTableCell}>
-                          {formatInvoiceMoney(item.price || item.rate || invoiceData.rate || 0)}
+                          {formatInvoiceMoney(item.price || item.unitPrice || item.rate || invoiceData.rate || 0)}
                         </Text>
                         <Text style={styles.pdfTableCellAmount}>
-                          {formatInvoiceMoney(item.amount || item.total || (item.quantity * item.price) || 0)}
+                          {formatInvoiceMoney(item.amount || item.total || ((item.quantity || item.hours || invoiceData.hours || 1) * (item.price || item.unitPrice || item.rate || invoiceData.rate || 0)) || 0)}
                         </Text>
                       </View>
                     ))

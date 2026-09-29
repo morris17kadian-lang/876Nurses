@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import { TouchableWeb } from '../components/TouchableWeb';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import InvoiceService from '../services/InvoiceService';
 import { useAppointments } from '../context/AppointmentContext';
+import SharedSettingsService from '../services/SharedSettingsService';
 
 export default function InvoiceManagementScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -38,6 +39,7 @@ export default function InvoiceManagementScreen({ navigation }) {
   const [paymentMethodModalVisible, setPaymentMethodModalVisible] = useState(false);
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('');
   const [invoiceToMarkPaid, setInvoiceToMarkPaid] = useState(null);
+  const invoicePreviewInitialized = useRef(false);
 
   const closePaymentMethodModal = () => {
     setPaymentMethodModalVisible(false);
@@ -352,11 +354,30 @@ export default function InvoiceManagementScreen({ navigation }) {
     });
   }, []);
 
+  const updateInvoiceList = React.useCallback((allInvoices) => {
+    const preparedInvoices = prepareInvoicesForDisplay(allInvoices);
+    setInvoices(preparedInvoices);
+    setSelectedInvoice((current) => {
+      if (current?.invoiceId) {
+        return preparedInvoices.find((invoice) => invoice?.invoiceId === current.invoiceId)
+          || preparedInvoices[0]
+          || null;
+      }
+
+      if (!invoicePreviewInitialized.current && preparedInvoices.length > 0) {
+        invoicePreviewInitialized.current = true;
+        return preparedInvoices[0];
+      }
+
+      return null;
+    });
+  }, [prepareInvoicesForDisplay]);
+
   const loadPaymentInfo = async () => {
     try {
-      const stored = await AsyncStorage.getItem('paymentInfo');
-      if (stored) {
-        setPaymentInfo(JSON.parse(stored));
+      const shared = await SharedSettingsService.read('paymentInfo');
+      if (shared) {
+        setPaymentInfo(shared);
       }
     } catch (error) {
       // Error loading payment info
@@ -365,9 +386,8 @@ export default function InvoiceManagementScreen({ navigation }) {
 
   const loadCompanyDetails = async () => {
     try {
-      const stored = await AsyncStorage.getItem('companyDetails');
-      if (stored) {
-        const parsed = JSON.parse(stored);
+      const parsed = await SharedSettingsService.read('company');
+      if (parsed) {
         setCompanyDetails({
           ...parsed,
           address: formatAddress(parsed?.address) || companyDetails.address,
@@ -390,7 +410,7 @@ export default function InvoiceManagementScreen({ navigation }) {
     React.useCallback(() => {
       const unsubscribe = InvoiceService.subscribeToInvoices(
         async (liveInvoices) => {
-          setInvoices(prepareInvoicesForDisplay(liveInvoices));
+          updateInvoiceList(liveInvoices);
           try {
             const invoiceStats = await InvoiceService.getInvoiceStats();
             setStats(invoiceStats);
@@ -410,7 +430,7 @@ export default function InvoiceManagementScreen({ navigation }) {
           // ignore
         }
       };
-    }, [prepareInvoicesForDisplay])
+    }, [updateInvoiceList])
   );
 
   const loadInvoices = async () => {
@@ -498,7 +518,7 @@ export default function InvoiceManagementScreen({ navigation }) {
 
       // Reload all invoices after auto-generation
       const updatedAllInvoices = await InvoiceService.getAllInvoices();
-      setInvoices(prepareInvoicesForDisplay(updatedAllInvoices));
+      updateInvoiceList(updatedAllInvoices);
       setStats(invoiceStats);
       setRecurringSchedules(schedules);
     } catch (error) {
@@ -613,7 +633,7 @@ export default function InvoiceManagementScreen({ navigation }) {
 
   const handleShareInvoice = async (invoice) => {
     try {
-      await InvoiceService.shareInvoice(invoice);
+      await InvoiceService.shareInvoice({ ...invoice, companyDetails, paymentInfo });
     } catch (error) {
       Alert.alert('Error', 'Could not share invoice: ' + error.message);
     }
@@ -727,14 +747,12 @@ export default function InvoiceManagementScreen({ navigation }) {
               {selectedInvoice ? `Invoice Preview - ${selectedInvoice.invoiceId}` : 'Invoice Preview'}
             </Text>
             <TouchableWeb
-              onPress={() => {
-                // PDF share feature temporarily disabled
-              }}
-              style={styles.shareIconButtonDisabled}
-              activeOpacity={1}
-              disabled
+              onPress={() => selectedInvoice && handleShareInvoice(selectedInvoice)}
+              style={selectedInvoice ? styles.shareIconButton : styles.shareIconButtonDisabled}
+              activeOpacity={selectedInvoice ? 0.7 : 1}
+              disabled={!selectedInvoice}
             >
-              <MaterialCommunityIcons name="file-pdf-box" size={18} color="#999" />
+              <MaterialCommunityIcons name="file-pdf-box" size={18} color={selectedInvoice ? COLORS.primary : '#999'} />
             </TouchableWeb>
           </View>
           

@@ -17,6 +17,14 @@ import { useAuth } from '../context/AuthContext';
 import { COLORS, SPACING, GRADIENTS } from '../constants';
 import useWindowDimensions from '../hooks/useWindowDimensions';
 
+const normalizeRole = (role) => {
+  const normalized = String(role || '').trim().toLowerCase();
+  if (normalized === 'superadmin' || normalized === 'admins') return 'admin';
+  if (normalized === 'nurses') return 'nurse';
+  if (normalized === 'users' || normalized === 'customers' || normalized === 'customer') return 'patient';
+  return normalized;
+};
+
 export default function NotificationsScreen({ navigation }) {
   const { user } = useAuth();
   const { 
@@ -30,7 +38,7 @@ export default function NotificationsScreen({ navigation }) {
   // Filter notifications based on user role
   const userNotifications = notifications.filter(notification => {
     // Show notification if no targetRole specified (global) or if targetRole matches user role
-    return !notification.data?.targetRole || notification.data?.targetRole === user?.role;
+    return !notification.data?.targetRole || normalizeRole(notification.data.targetRole) === normalizeRole(user?.role);
   });
 
   const handleNotificationPress = async (notification) => {

@@ -1,11 +1,23 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState } from 'react-native';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { useAuth } from './AuthContext';
 import PushNotificationService from '../services/PushNotificationService';
 import ApiService from '../services/ApiService';
+import FirebaseService from '../services/FirebaseService';
+import { db } from '../config/firebase';
 import { COLORS } from '../constants';
 
 const NotificationContext = createContext();
+
+const normalizeNotificationRole = (role) => {
+  const normalized = String(role || '').trim().toLowerCase();
+  if (normalized === 'superadmin' || normalized === 'admins') return 'admin';
+  if (normalized === 'nurses') return 'nurse';
+  if (normalized === 'users' || normalized === 'customers' || normalized === 'customer') return 'patient';
+  return normalized;
+};
 
 export const useNotifications = () => {
   const context = useContext(NotificationContext);
@@ -21,6 +33,15 @@ export const NotificationProvider = ({ children }) => {
   const [unreadCount, setUnreadCount] = useState(0);
   const [pushToken, setPushToken] = useState(null);
   const [pushPermissionStatus, setPushPermissionStatus] = useState('undetermined');
+  const [notificationPreferences, setNotificationPreferences] = useState({
+    pushNotifications: true,
+    appointments: true,
+    reminders: true,
+    serviceUpdates: true,
+    payments: true,
+    systemNotifications: false,
+    emailNotifications: true,
+  });
 
   const STORAGE_KEY = '@876_notifications';
 
@@ -108,27 +129,6 @@ export const NotificationProvider = ({ children }) => {
           notificationList.forEach((n) => {
             if (n?.read || n?.isRead) {
               if (n.id) nextLedger[`id:${String(n.id)}`] = true;
-              const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
-              nextLedger[`legacy:${legacyKey}`] = true;
-
-              const data = n?.data || {};
-              const type = data?.type || n?.type || '';
-              const ids = [
-                data?.notificationId,
-                data?.conversationId,
-                data?.appointmentId,
-                data?.shiftRequestId,
-                data?.shiftId,
-                data?.invoiceId,
-                data?.orderId,
-                data?.requestId,
-                data?.assignmentId,
-                data?.messageId,
-              ]
-                .filter(Boolean)
-                .map((v) => String(v));
-              const richKey = `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
-              nextLedger[`rich:${richKey}`] = true;
             }
           });
           await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(nextLedger));
@@ -157,29 +157,6 @@ export const NotificationProvider = ({ children }) => {
           const storedLocal = await AsyncStorage.getItem(userKey);
           const localReadStatus = {};
 
-          const notificationReadKey = (n) => {
-            const data = n?.data || {};
-            const type = data?.type || n?.type || '';
-
-            const ids = [
-              data?.notificationId,
-              data?.conversationId,
-              data?.appointmentId,
-              data?.shiftRequestId,
-              data?.shiftId,
-              data?.invoiceId,
-              data?.orderId,
-              data?.requestId,
-              data?.assignmentId,
-              data?.messageId,
-            ]
-              .filter(Boolean)
-              .map((v) => String(v));
-
-            // Title/message are fallbacks (may be unstable); IDs in data are preferred.
-            return `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
-          };
-
           // Merge in the persisted read ledger first (most reliable)
           try {
             const ledgerKey = getUserReadLedgerKey(user.id);
@@ -203,14 +180,6 @@ export const NotificationProvider = ({ children }) => {
                 localList.forEach(n => {
                   if (n?.read || n?.isRead) {
                     if (n.id) localReadStatus[`id:${String(n.id)}`] = true;
-
-                    // Title/message/type dedupe key (legacy fallback)
-                    const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
-                    localReadStatus[`legacy:${legacyKey}`] = true;
-
-                    // More stable key using IDs embedded in data (preferred)
-                    const richKey = notificationReadKey(n);
-                    localReadStatus[`rich:${richKey}`] = true;
                   }
                 });
               }
@@ -221,20 +190,9 @@ export const NotificationProvider = ({ children }) => {
 
           const notificationList = firebaseNotifs.map(notif => {
             const id = notif.id?.toString() || (notif._id ? String(notif._id) : null) || `notif_${Date.now()}`;
-            const legacyKey = `${notif.title}|${notif.message}|${notif.data?.type || notif.type}`;
-            const richKey = notificationReadKey({
-              id,
-              title: notif.title,
-              message: notif.message,
-              type: notif.type,
-              data: notif.data || {},
-            });
-            
-            // Check if locally read
-            const isLocallyRead =
-              localReadStatus[`id:${id}`] ||
-              localReadStatus[`rich:${richKey}`] ||
-              localReadStatus[`legacy:${legacyKey}`];
+            // A read on one notification must not hide another notification
+            // that happens to have the same title and message.
+            const isLocallyRead = localReadStatus[`id:${id}`];
 
             const isReadFromServer = Boolean(notif.isRead) || Boolean(notif.read);
             const isRead = Boolean(isLocallyRead || isReadFromServer);
@@ -254,20 +212,7 @@ export const NotificationProvider = ({ children }) => {
             };
           });
           
-          // Deduplicate by title+message+type within 5 seconds - more robust than ID matching
-          const deduplicatedNotifications = [];
-          const seen = new Set();
-          
-          for (const notif of notificationList) {
-            // Create a key based on title, message, and type
-            const key = `${notif.title}|${notif.message}|${notif.data?.type || notif.type}`;
-            if (!seen.has(key)) {
-              seen.add(key);
-              deduplicatedNotifications.push(notif);
-            }
-          }
-          
-          const sorted = sortNotificationsNewestFirst(deduplicatedNotifications);
+          const sorted = sortNotificationsNewestFirst(notificationList);
           setNotifications(sorted);
           updateUnreadCount(sorted);
           
@@ -281,10 +226,6 @@ export const NotificationProvider = ({ children }) => {
             sorted.forEach((n) => {
               if (n?.read || n?.isRead) {
                 if (n.id) nextLedger[`id:${String(n.id)}`] = true;
-                const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
-                nextLedger[`legacy:${legacyKey}`] = true;
-                const richKey = notificationReadKey(n);
-                nextLedger[`rich:${richKey}`] = true;
               }
             });
             await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(nextLedger));
@@ -314,46 +255,9 @@ export const NotificationProvider = ({ children }) => {
         if (notificationList.length !== notifications.length || 
             (notificationList.length > 0 && notificationList[0].id !== notifications[0]?.id)) {
           
-          // Check for new notifications (ones we haven't seen before)
-          const newNotifications = notificationList.filter(newNotif => 
-            !notifications.find(existing => existing.id === newNotif.id)
-          );
-          
-          // Only send local push notifications for truly new notifications
-          if (newNotifications.length > 0) {
-            // Only log if we actually have new content (not just the same notifications)
-            const hasNewContent = newNotifications.some(notif => !notif.pushSent);
-            if (hasNewContent) {
-              // Found new notifications
-            }
-            
-            for (const newNotif of newNotifications) {
-              try {
-                // Only send push notification if we haven't already sent one for this notification
-                if (!newNotif.pushSent) {
-                  let permissionStatus = pushPermissionStatus;
-                  if (permissionStatus !== 'granted') {
-                    permissionStatus = await requestPushPermissions();
-                  }
-                  
-                  await PushNotificationService.sendLocalNotification(
-                    newNotif.title,
-                    newNotif.message,
-                    { notificationId: newNotif.id, ...newNotif.data }
-                  );
-                  
-                  // Mark this notification as having had its push notification sent
-                  newNotif.pushSent = true;
-                  // Push notification sent
-                }
-              } catch (error) {
-                console.error('Failed to send push notification for new message:', error);
-              }
-            }
-            
-            // Update storage with pushSent flags
-            await AsyncStorage.setItem(userKey, JSON.stringify(notificationList));
-          }
+          // The trusted backend sends device pushes when it creates each record.
+          // Replaying them locally during polling duplicates alerts on active devices.
+          await AsyncStorage.setItem(userKey, JSON.stringify(notificationList));
           
           setNotifications(notificationList);
           updateUnreadCount(notificationList);
@@ -398,6 +302,9 @@ export const NotificationProvider = ({ children }) => {
       if (status === 'granted') {
         const token = await PushNotificationService.initialize();
         setPushToken(token);
+        if (token && user?.id) {
+          await FirebaseService.registerPushToken(user.id, token);
+        }
       }
       
       return status;
@@ -407,11 +314,45 @@ export const NotificationProvider = ({ children }) => {
     }
   };
 
+  const saveNotificationPreferences = async (updates = {}) => {
+    const next = { ...notificationPreferences, ...updates };
+    setNotificationPreferences(next);
+    PushNotificationService.setNotificationPreferences(next);
+    if (user?.id) {
+      try {
+        await AsyncStorage.setItem(`notificationPreferences_${user.id}`, JSON.stringify(next));
+      } catch (error) {
+        console.warn('Failed to cache notification preferences:', error?.message || error);
+      }
+      try {
+        await ApiService.saveNotificationPreferences(user.id, updates);
+      } catch (error) {
+        console.warn('Failed to sync notification preferences:', error?.message || error);
+      }
+    }
+    return next;
+  };
+
+  const notificationTypeEnabled = (type) => {
+    const normalizedType = String(type || '').toLowerCase();
+    // Chat notifications are intentionally disabled across the app.
+    if (/chat|message/.test(normalizedType)) return false;
+    if (/appointment|shift|assignment|coverage|clock|booking|schedule/.test(normalizedType)) {
+      return notificationPreferences.appointments !== false;
+    }
+    if (/reminder/.test(normalizedType)) return notificationPreferences.reminders !== false;
+    if (/service|store|order/.test(normalizedType)) return notificationPreferences.serviceUpdates !== false;
+    if (/payment|invoice|payslip|financial/.test(normalizedType)) return notificationPreferences.payments !== false;
+    if (/system|general/.test(normalizedType)) return notificationPreferences.systemNotifications === true;
+    return true;
+  };
+
   // Update unread count
   const updateUnreadCount = (notificationList) => {
     // Filter notifications based on user role (same logic as NotificationsScreen)
     const userNotifications = notificationList.filter(notification => {
-      return !notification.data?.targetRole || notification.data?.targetRole === user?.role;
+      return !notification.data?.targetRole ||
+        normalizeNotificationRole(notification.data.targetRole) === normalizeNotificationRole(user?.role);
     });
     
     const unread = userNotifications.filter(n => !n.read).length;
@@ -450,6 +391,9 @@ export const NotificationProvider = ({ children }) => {
 
     // Send local push notification - request permissions if needed
     try {
+      if (notificationPreferences.pushNotifications === false || !notificationTypeEnabled(newNotification.data?.type || newNotification.type)) {
+        return newNotification;
+      }
       let permissionStatus = pushPermissionStatus;
       if (permissionStatus !== 'granted') {
         // Requesting notification permissions for local notification
@@ -489,30 +433,7 @@ export const NotificationProvider = ({ children }) => {
         const ledgerKey = getUserReadLedgerKey(user.id);
         const n = updatedNotifications.find((x) => x?.id === notificationId);
         if (n) {
-          const data = n?.data || {};
-          const type = data?.type || n?.type || '';
-          const ids = [
-            data?.notificationId,
-            data?.conversationId,
-            data?.appointmentId,
-            data?.shiftRequestId,
-            data?.shiftId,
-            data?.invoiceId,
-            data?.orderId,
-            data?.requestId,
-            data?.assignmentId,
-            data?.messageId,
-          ]
-            .filter(Boolean)
-            .map((v) => String(v));
-          const richKey = `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
-          const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
-          const patch = {
-            [`id:${String(notificationId)}`]: true,
-            [`legacy:${legacyKey}`]: true,
-            [`rich:${richKey}`]: true,
-          };
-          await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(patch));
+          await AsyncStorage.mergeItem(ledgerKey, JSON.stringify({ [`id:${String(notificationId)}`]: true }));
         }
       }
     } catch (e) {
@@ -547,26 +468,6 @@ export const NotificationProvider = ({ children }) => {
         updatedNotifications.forEach((n) => {
           if (!n) return;
           if (n.id) patch[`id:${String(n.id)}`] = true;
-          const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
-          patch[`legacy:${legacyKey}`] = true;
-          const data = n?.data || {};
-          const type = data?.type || n?.type || '';
-          const ids = [
-            data?.notificationId,
-            data?.conversationId,
-            data?.appointmentId,
-            data?.shiftRequestId,
-            data?.shiftId,
-            data?.invoiceId,
-            data?.orderId,
-            data?.requestId,
-            data?.assignmentId,
-            data?.messageId,
-          ]
-            .filter(Boolean)
-            .map((v) => String(v));
-          const richKey = `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
-          patch[`rich:${richKey}`] = true;
         });
         await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(patch));
       }
@@ -723,17 +624,17 @@ export const NotificationProvider = ({ children }) => {
     // Route system notifications based on targetRole
     const targetRole = systemData?.targetRole;
     
-    if (targetRole && targetRole !== user?.role) {
+    if (targetRole && normalizeNotificationRole(targetRole) !== normalizeNotificationRole(user?.role)) {
       return Promise.resolve(); // Don't show to users not in target role
     }
     
     // Show assignment notifications to nurses only
-    if (systemData?.type === 'assignment_received' && user?.role !== 'nurse') {
+    if (systemData?.type === 'assignment_received' && normalizeNotificationRole(user?.role) !== 'nurse') {
       return Promise.resolve();
     }
     
     // Show assignment accepted/declined notifications to admins only
-    if ((systemData?.type === 'assignment_accepted' || systemData?.type === 'assignment_declined') && user?.role !== 'admin') {
+    if ((systemData?.type === 'assignment_accepted' || systemData?.type === 'assignment_declined') && normalizeNotificationRole(user?.role) !== 'admin') {
       return Promise.resolve();
     }
     
@@ -769,138 +670,28 @@ export const NotificationProvider = ({ children }) => {
     }
   };
 
-  // Send cross-user notification (simplified for demo - would require backend in real app)
+  // Cross-user notification writes and push delivery are handled by the callable backend.
   const sendNotificationToUser = async (targetUserId, targetRole, title, message, data = {}) => {
     try {
-      let backendSuccess = false;
-
-      // All authenticated users can create notifications in Firestore per security rules.
-      // The previous admin-only gate meant nurse→nurse notifications (e.g. backup coverage
-      // requests) were only written to AsyncStorage on the sender's device and never reached
-      // the recipient on their own device.
-      try {
-        const result = await ApiService.sendNotification({
-          userId: targetUserId,
-          title,
-          message,
-          type: data.type || 'general',
-          data,
-          sentAt: new Date().toISOString()
-        });
-
-        if (result && result.id) {
-          backendSuccess = true;
-          return result;
-        }
-      } catch (apiError) {
-        // Non-fatal; fall back to local storage
-        console.warn('Failed to send notification via Firebase (fallback to local):', apiError?.message || apiError);
+      const knownRoles = ['admin', 'superadmin', 'nurse', 'patient', 'customer'];
+      if (!knownRoles.includes(String(targetRole || '').toLowerCase())) {
+        // Support existing callers that use (id, title, message, data).
+        data = message && typeof message === 'object' ? message : data;
+        message = title;
+        title = targetRole;
+        targetRole = /^admin/i.test(String(targetUserId || '')) ? 'admin' : undefined;
       }
 
-      // Only save locally if Firestore write failed (to avoid duplicates)
-      if (backendSuccess) {
-        return null;
-      }
-
-      const targetUserKey = `${STORAGE_KEY}_${targetUserId}`;
-
-      const existingNotifications = await AsyncStorage.getItem(targetUserKey);
-      let notificationList = existingNotifications ? JSON.parse(existingNotifications) : [];
-      
-      // Check if this exact notification already exists (deduplicate)
-      const notificationId = `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const alreadyExists = notificationList.some(notif => 
-        notif.title === title && 
-        notif.message === message && 
-        notif.data?.type === data.type &&
-        Math.abs(new Date(notif.timestamp) - new Date()) < 60000 // Within 60 seconds (increased window)
-      );
-      
-      if (alreadyExists) {
-        return null;
-      }
-      
-      // Determine notification type based on data.type or default to SYSTEM
-      let notificationType = NotificationTypes.SYSTEM;
-      if (data.type === 'shift_request' || data.type === 'shift_approved' || data.type === 'shift_denied') {
-        notificationType = NotificationTypes.APPOINTMENT;
-      } else if (data.type === 'appointment_approved' || data.type === 'appointment_assigned') {
-        notificationType = NotificationTypes.APPOINTMENT;
-      } else if (data.type === 'chat') {
-        notificationType = NotificationTypes.MESSAGE;
-      }
-      
-      const newNotification = {
-        id: notificationId,
-        timestamp: new Date().toISOString(),
-        read: false,
+      const routedData = { ...data, ...(targetRole ? { targetRole } : {}) };
+      return await ApiService.sendNotification({
+        userId: targetUserId,
+        targetRole,
         title,
         message,
-        ...notificationType,
-        data: { ...data, targetRole },
-        pushSent: false
-      };
-      
-      const updatedNotifications = [newNotification, ...notificationList];
-      
-      // Deduplicate the entire list by ID
-      const deduplicatedNotifications = Array.from(
-        new Map(updatedNotifications.map(item => [item.id, item])).values()
-      );
-      
-      await AsyncStorage.setItem(targetUserKey, JSON.stringify(deduplicatedNotifications));
-      
-      // Also store in global pool for better cross-device sync
-      try {
-        const globalNotificationKey = `@876_notifications_global`;
-        const globalNotifications = await AsyncStorage.getItem(globalNotificationKey);
-        let allNotifications = globalNotifications ? JSON.parse(globalNotifications) : [];
-        
-        // Check if this notification is already in global pool
-        const alreadyInGlobal = allNotifications.some(notif =>
-          notif.title === title &&
-          notif.message === message &&
-          notif.targetUserId === targetUserId
-        );
-        
-        if (!alreadyInGlobal) {
-          allNotifications.push({
-            ...newNotification,
-            targetUserId,
-            targetRole,
-            sentAt: new Date().toISOString()
-          });
-          await AsyncStorage.setItem(globalNotificationKey, JSON.stringify(allNotifications));
-          // console.log('📨 Notification stored in global pool for cross-device sync');
-        }
-      } catch (globalError) {
-        console.error('Failed to store in global notification pool:', globalError);
-      }
-      
-      // console.log(`📨 Notification sent to ${targetUserId}:`, { title, type: data.type });
-      
-      // If this is for the current user, also send a local push notification
-      if (targetUserId === user?.id) {
-        try {
-          // First ensure we have permissions for local notifications
-          let permissionStatus = pushPermissionStatus;
-          if (permissionStatus !== 'granted') {
-            // console.log('Requesting notification permissions...');
-            permissionStatus = await requestPushPermissions();
-          }
-          
-          // Send local notification regardless of permission status (for demo purposes)
-          await PushNotificationService.sendLocalNotification(title, message, {
-            notificationId: newNotification.id,
-            ...data
-          });
-          // console.log('📱 Local notification sent:', title);
-        } catch (error) {
-          console.error('Failed to send local notification:', error);
-        }
-      }
-      
-      return newNotification;
+        type: routedData.type || 'general',
+        data: routedData,
+        sentAt: new Date().toISOString(),
+      });
     } catch (error) {
       console.error('Failed to send notification to user:', error);
       return null;
@@ -910,8 +701,30 @@ export const NotificationProvider = ({ children }) => {
   // Load notifications on user change
   useEffect(() => {
     if (user) {
-      loadNotifications();
+      loadNotifications().finally(() => refreshNotifications());
       initializePushNotifications();
+      (async () => {
+        try {
+          const remote = await ApiService.getNotificationPreferences(user.id);
+          const cachedRaw = await AsyncStorage.getItem(`notificationPreferences_${user.id}`);
+          const cached = cachedRaw ? JSON.parse(cachedRaw) : {};
+          const merged = {
+            pushNotifications: true,
+            appointments: true,
+            reminders: true,
+            serviceUpdates: true,
+            payments: true,
+            systemNotifications: false,
+            emailNotifications: true,
+            ...cached,
+            ...(remote || {}),
+          };
+          setNotificationPreferences(merged);
+          PushNotificationService.setNotificationPreferences(merged);
+        } catch (error) {
+          console.warn('Failed to load notification preferences:', error?.message || error);
+        }
+      })();
 
       // Poll for new notifications every 15 seconds (reduced frequency to prevent log spam)
       // This ensures notification delivery while reducing excessive polling
@@ -919,12 +732,41 @@ export const NotificationProvider = ({ children }) => {
         refreshNotifications();
       }, 15000); // Increased from 5 seconds to 15 seconds
 
+      // Keep the bell count in sync when another device creates or reads a
+      // notification. Polling remains a fallback if the listener disconnects.
+      const notificationsQuery = query(
+        collection(db, 'notifications'),
+        where('userId', '==', user.id)
+      );
+      const unsubscribeNotifications = onSnapshot(
+        notificationsQuery,
+        () => refreshNotifications(),
+        (error) => console.warn('Notification listener disconnected:', error?.message || error)
+      );
+      const appStateSubscription = AppState.addEventListener('change', (state) => {
+        if (state === 'active') refreshNotifications();
+      });
+
       return () => {
         clearInterval(pollInterval);
+        unsubscribeNotifications();
+        appStateSubscription.remove();
+        PushNotificationService.cleanup();
       };
     } else {
       setNotifications([]);
       setUnreadCount(0);
+      const defaultPreferences = {
+        pushNotifications: true,
+        appointments: true,
+        reminders: true,
+        serviceUpdates: true,
+        payments: true,
+        systemNotifications: false,
+        emailNotifications: true,
+      };
+      setNotificationPreferences(defaultPreferences);
+      PushNotificationService.setNotificationPreferences(defaultPreferences);
       PushNotificationService.setBadgeCount(0);
     }
   }, [user]);
@@ -934,6 +776,8 @@ export const NotificationProvider = ({ children }) => {
     unreadCount,
     pushToken,
     pushPermissionStatus,
+    notificationPreferences,
+    saveNotificationPreferences,
     addNotification,
     markAsRead,
     markAllAsRead,

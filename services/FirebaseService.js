@@ -19,8 +19,11 @@ import {
   limit,
   Timestamp,
   writeBatch,
+  arrayRemove,
+  deleteField,
 } from 'firebase/firestore';
 import { getBackendBaseUrl } from './backendUtils';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 const USERS_COLLECTION = 'users';
 const APPOINTMENTS_COLLECTION = 'appointments';
@@ -455,6 +458,41 @@ class FirebaseService {
       }
       console.error('Error updating user:', error);
       return { success: false, error: error.message };
+    }
+  }
+
+  static async registerPushToken(userId, token) {
+    if (!userId || !token) return { success: false, error: 'Missing user or push token' };
+    try {
+      const register = httpsCallable(getFunctions(app, 'us-central1'), 'registerDevicePushToken');
+      const result = await register({ token });
+      return result?.data || { success: true };
+    } catch (error) {
+      console.warn('Exclusive push token registration failed:', error?.message || error);
+      return { success: false, error: error?.message || 'Push token registration failed' };
+    }
+  }
+
+  static async unregisterPushToken(userId, token) {
+    if (!userId || !token) return { success: false, error: 'Missing user or push token' };
+    try {
+      const updates = [];
+      for (const collectionName of ['admins', 'nurses', USERS_COLLECTION]) {
+        const ref = doc(db, collectionName, userId);
+        const snapshot = await getDoc(ref);
+        if (!snapshot.exists()) continue;
+        const profile = snapshot.data() || {};
+        const patch = { pushTokens: arrayRemove(token) };
+        if (profile.expoPushToken === token) patch.expoPushToken = deleteField();
+        if (profile.fcmToken === token) patch.fcmToken = deleteField();
+        if (profile.pushToken === token) patch.pushToken = deleteField();
+        updates.push(updateDoc(ref, patch));
+      }
+      await Promise.all(updates);
+      return { success: true };
+    } catch (error) {
+      console.warn('Failed to unregister push token:', error?.message || error);
+      return { success: false, error: error?.message || String(error) };
     }
   }
 

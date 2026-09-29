@@ -1,5 +1,6 @@
 // Firebase-based API Service for 876Nurses
-import { db } from '../config/firebase';
+import { app, db } from '../config/firebase';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import {
   collection,
   doc,
@@ -416,19 +417,45 @@ class ApiService {
     }
   }
 
+  static async getGuestAppointmentUpdates({ appointmentIds = [], patientId = null, email = null, legacyAppointments = [] } = {}) {
+    const ids = Array.isArray(appointmentIds)
+      ? [...new Set(appointmentIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 50)
+      : [];
+    if (!ids.length || (!patientId && !email)) return [];
+
+    try {
+      const getGuestUpdates = httpsCallable(getFunctions(app, 'us-central1'), 'getGuestAppointmentUpdates');
+      const result = await getGuestUpdates({
+        appointmentIds: ids,
+        patientId: patientId ? String(patientId) : null,
+        email: email ? String(email) : null,
+        legacyAppointments: Array.isArray(legacyAppointments) ? legacyAppointments.slice(0, 20) : [],
+      });
+      return Array.isArray(result?.data?.appointments) ? result.data.appointments : [];
+    } catch (error) {
+      console.warn('Could not refresh guest appointment statuses:', error?.message || error);
+      return [];
+    }
+  }
+
   static async createAppointment(appointmentData) {
     try {
       const sanitized = ApiService.sanitizeData(appointmentData) || {};
+      const createdAt = new Date().toISOString();
       const docRef = await addDoc(collection(db, COLLECTIONS.APPOINTMENTS), {
         ...sanitized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      
-      const newDoc = await getDoc(docRef);
+
+      // Guests may create appointments but cannot read them through Firestore
+      // rules. Return the ID from the successful write instead of reading it
+      // back and incorrectly treating a read permission error as a failed booking.
       return {
-        id: newDoc.id,
-        ...newDoc.data()
+        ...sanitized,
+        id: docRef.id,
+        createdAt,
+        updatedAt: createdAt,
       };
     } catch (error) {
       console.error('Error creating appointment:', error);
@@ -1305,23 +1332,19 @@ class ApiService {
   }
 
   static async createNotification(notificationData) {
-    try {
-      const docRef = await addDoc(collection(db, COLLECTIONS.NOTIFICATIONS), {
-        ...notificationData,
-        createdAt: serverTimestamp(),
-        read: false,
-        isRead: false,
-      });
-      
-      const newDoc = await getDoc(docRef);
-      return {
-        id: newDoc.id,
-        ...newDoc.data()
-      };
-    } catch (error) {
-      console.error('Error creating notification:', error);
-      throw error;
-    }
+    const {
+      userId, recipientId, targetRole, title, message, body, type, data = {},
+      sentAt, createdAt, read, isRead, ...legacyData
+    } = notificationData || {};
+    return this.sendNotification({
+      userId: userId || recipientId,
+      targetRole,
+      title,
+      message: message || body,
+      type,
+      data: { ...legacyData, ...(data && typeof data === 'object' ? data : {}) },
+      sentAt,
+    });
   }
 
   static async markNotificationRead(notificationId) {
@@ -1781,6 +1804,12 @@ class ApiService {
     }
   }
 
+  static async deleteOwnAccount() {
+    const deleteAccount = httpsCallable(getFunctions(app, 'us-central1'), 'deleteOwnAccount');
+    const result = await deleteAccount({});
+    return result?.data || { success: true };
+  }
+
   // ==================== USER MANAGEMENT ====================
   static async getAllUsers() {
     try {
@@ -1985,35 +2014,46 @@ class ApiService {
         );
       };
 
-      const docData = {
+      const cleanData = sanitizeData(data || {});
+      const sendNotification = httpsCallable(getFunctions(app, 'us-central1'), 'sendAppNotification');
+      const callablePayload = {
         userId,
         title,
         message,
         type: type || 'system',
-        data: sanitizeData(data || {}),
-        isRead: false,
+        data: cleanData,
         sentAt: sentAt || new Date().toISOString(),
-        createdAt: serverTimestamp(),
       };
-
-      const docRef = await addDoc(collection(db, COLLECTIONS.NOTIFICATIONS), docData);
-      return { id: docRef.id, ...docData };
+      const targetRole = notificationData.targetRole || cleanData?.targetRole;
+      if (targetRole) callablePayload.targetRole = targetRole;
+      const result = await sendNotification(callablePayload);
+      return result?.data || null;
     } catch (error) {
-      const code = error?.code || '';
-      const message = (error?.message || '').toLowerCase();
-      const isPermissionDenied =
-        code === 'permission-denied' ||
-        message.includes('missing or insufficient permissions');
-
-      if (isPermissionDenied) {
-        // In this app, /notifications writes are restricted to admins by Firestore rules.
-        // Treat this as a non-fatal condition so callers can fall back.
-        return null;
-      }
-
       console.error('Error sending notification:', error);
       throw error;
     }
+  }
+
+  static async getNotificationPreferences(userId) {
+    if (!userId) return null;
+    const snapshot = await getDoc(doc(db, 'notificationPreferences', String(userId)));
+    return snapshot.exists() ? snapshot.data() : null;
+  }
+
+  static async saveNotificationPreferences(userId, updates = {}) {
+    if (!userId) throw new Error('UserId is required for notification preferences');
+    const allowedKeys = [
+      'pushNotifications', 'appointments', 'reminders',
+      'serviceUpdates', 'payments', 'systemNotifications', 'emailNotifications',
+    ];
+    const cleanUpdates = Object.fromEntries(
+      Object.entries(updates).filter(([key, value]) => allowedKeys.includes(key) && typeof value === 'boolean')
+    );
+    await setDoc(doc(db, 'notificationPreferences', String(userId)), {
+      ...cleanUpdates,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+    return cleanUpdates;
   }
 
   // ==================== PAYSLIPS ====================

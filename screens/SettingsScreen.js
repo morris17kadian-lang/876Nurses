@@ -15,10 +15,13 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY, GRADIENTS, CONTACT_INFO } from '../constants';
 import { useAuth } from '../context/AuthContext';
+import Constants from 'expo-constants';
 
 export default function SettingsScreen({ navigation }) {
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
+  const appVersion = Constants.expoConfig?.version || '1.0.3';
+  const currentYear = new Date().getFullYear();
 
   const handleLogout = () => {
     Alert.alert(
@@ -174,7 +177,7 @@ export default function SettingsScreen({ navigation }) {
           <SettingItem
             icon="information"
             title="About"
-            subtitle="Version 1.0.0"
+            subtitle={`Version ${appVersion}`}
             onPress={handleAbout}
           />
         </View>
@@ -198,7 +201,7 @@ export default function SettingsScreen({ navigation }) {
 
         <View style={styles.footer}>
           <Text style={styles.footerText}>876 Nurses Home Care Services Limited</Text>
-          <Text style={styles.footerSubtext}>© 2025 All rights reserved</Text>
+          <Text style={styles.footerSubtext}>© {currentYear} All rights reserved</Text>
         </View>
       </ScrollView>
     </SafeAreaView>

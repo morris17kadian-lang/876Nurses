@@ -17,6 +17,7 @@ import { resolveNurseDetails } from '../utils/resolveNurseDetails';
 export default function NurseDetailsModal({
   visible,
   onClose,
+  onDismiss,
   nurse,
   nursesRoster = null,
   footer = null,
@@ -144,6 +145,7 @@ export default function NurseDetailsModal({
       animationType="slide"
       transparent
       onRequestClose={onClose}
+      onDismiss={onDismiss}
     >
       <View style={styles.modalOverlay}>
         <View style={styles.modalContainer}>

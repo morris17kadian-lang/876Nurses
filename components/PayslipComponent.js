@@ -149,7 +149,14 @@ const PayslipComponent = ({ payslip, onClose, onShare, hideHeader = false }) => 
               </View>
 
               {/* Regular Hours Row */}
-              {parseFloat(payslip.regularHours || 0) > 0 && (
+              {payslip.shiftPay !== undefined && (
+                <>
+                  {parseFloat(payslip.shiftPay || 0) > 0 && <View style={styles.tableRow}><Text style={[styles.tableCell, { flex: 2 }]}>Completed shifts ({payslip.shiftsCompleted || 0})</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{payslip.shiftHours || 0}</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>Shift rates</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center', fontWeight: '600' }]}>{formatCurrency(payslip.shiftPay)}</Text></View>}
+                  {parseFloat(payslip.appointmentPay || 0) > 0 && <View style={styles.tableRow}><Text style={[styles.tableCell, { flex: 2 }]}>Completed appointments</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{payslip.appointmentHours || 0}</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{formatCurrency(payslip.hourlyRate)}</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center', fontWeight: '600' }]}>{formatCurrency(payslip.appointmentPay)}</Text></View>}
+                  {parseFloat(payslip.holidayPremium || 0) > 0 && <View style={styles.tableRow}><Text style={[styles.tableCell, { flex: 2 }]}>Public holiday premium</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>—</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>—</Text><Text style={[styles.tableCell, { flex: 1, textAlign: 'center', fontWeight: '600' }]}>{formatCurrency(payslip.holidayPremium)}</Text></View>}
+                </>
+              )}
+              {payslip.shiftPay === undefined && parseFloat(payslip.regularHours || 0) > 0 && (
                 <View style={styles.tableRow}>
                   <Text style={[styles.tableCell, { flex: 2 }]}>Home Care Assistance</Text>
                   <Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{payslip.regularHours}</Text>
@@ -171,10 +178,10 @@ const PayslipComponent = ({ payslip, onClose, onShare, hideHeader = false }) => 
               {/* If no regular hours, show total */}
               {parseFloat(payslip.regularHours || 0) === 0 && (
                 <View style={styles.tableRow}>
-                  <Text style={[styles.tableCell, { flex: 2 }]}>Home Care Assistance</Text>
-                  <Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{payslip.hoursWorked || '0.64'}</Text>
-                  <Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{formatCurrency(payslip.hourlyRate || 18100)}</Text>
-                  <Text style={[styles.tableCell, { flex: 1, textAlign: 'center', fontWeight: '600' }]}>{formatCurrency(payslip.grossPay)}</Text>
+                  <Text style={[styles.tableCell, { flex: 2 }]}>{payslip.payType === 'salary' ? 'Salary' : 'Recorded work'}</Text>
+                  <Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{payslip.hoursWorked || '—'}</Text>
+                  <Text style={[styles.tableCell, { flex: 1, textAlign: 'center' }]}>{payslip.hourlyRate ? formatCurrency(payslip.hourlyRate) : '—'}</Text>
+                  <Text style={[styles.tableCell, { flex: 1, textAlign: 'center', fontWeight: '600' }]}>{formatCurrency(payslip.basePay ?? payslip.grossPay)}</Text>
                 </View>
               )}
             </View>
@@ -185,12 +192,22 @@ const PayslipComponent = ({ payslip, onClose, onShare, hideHeader = false }) => 
             <View style={styles.totalAndPaidContainer}>
               <View style={styles.totalSection}>
                 <View style={styles.totalRow}>
-                  <Text style={styles.totalLabel}>Subtotal:</Text>
+                  <Text style={styles.totalLabel}>Base Pay:</Text>
+                  <Text style={styles.totalValue}>{formatCurrency(payslip.staffType === 'nursing' ? payslip.regularPay : payslip.basePay)}</Text>
+                </View>
+                {Object.entries(payslip.allowances || {}).filter(([, amount]) => parseFloat(amount || 0) > 0).map(([name, amount]) => (
+                  <View key={name} style={styles.totalRow}>
+                    <Text style={styles.totalLabel}>{name.replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase())} allowance:</Text>
+                    <Text style={styles.totalValue}>+{formatCurrency(amount)}</Text>
+                  </View>
+                ))}
+                <View style={styles.totalRow}>
+                  <Text style={styles.totalLabel}>Gross Pay:</Text>
                   <Text style={styles.totalValue}>{formatCurrency(payslip.grossPay)}</Text>
                 </View>
 
                 <View style={styles.finalTotalRow}>
-                  <Text style={styles.finalTotalLabel}>Total Amount:</Text>
+                  <Text style={styles.finalTotalLabel}>Net Pay:</Text>
                   <Text style={styles.finalTotalValue}>{formatCurrency(payslip.netPay)}</Text>
                 </View>
               </View>

@@ -29,10 +29,10 @@ import { useNurses } from '../context/NurseContext';
 import { useShifts } from '../context/ShiftContext';
 import InvoiceService from '../services/InvoiceService';
 import EmailService from '../services/EmailService';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getNurseName } from '../utils/formatters';
 import NotesAccordionList from '../components/NotesAccordionList';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import SharedSettingsService from '../services/SharedSettingsService';
 
 export default function AdminClientsScreen({ navigation, route, isEmbedded = false, searchQuery = '' }) {
   const { logout } = useAuth();
@@ -664,9 +664,9 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
 
   const loadCompanyDetails = async () => {
     try {
-      const stored = await AsyncStorage.getItem('companyDetails');
-      if (stored) {
-        setCompanyDetails(JSON.parse(stored));
+      const shared = await SharedSettingsService.read('company');
+      if (shared) {
+        setCompanyDetails(shared);
       }
     } catch (error) {
       // Error loading company details
@@ -675,9 +675,9 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
 
   const loadPaymentInfo = async () => {
     try {
-      const stored = await AsyncStorage.getItem('paymentInfo');
-      if (stored) {
-        setPaymentInfo(JSON.parse(stored));
+      const shared = await SharedSettingsService.read('paymentInfo');
+      if (shared) {
+        setPaymentInfo(shared);
       }
     } catch (error) {
       // Error loading payment info
@@ -1551,7 +1551,7 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
               onPress: async () => {
                 try {
                   // Use the same email functionality as invoice management
-                  await InvoiceService.shareInvoice(invoice);
+                  await InvoiceService.shareInvoice({ ...invoice, companyDetails, paymentInfo });
                   Alert.alert(
                     'Success', 
                     `Invoice #${invoice.invoiceId} sent to ${client.email}\n` +

@@ -36,9 +36,8 @@ const registerPushToken = async (userId) => {
     const pushToken = await PushNotificationService.initialize();
     
     if (pushToken) {
-      // Update user profile with FCM token
-      const updateResult = await FirebaseService.updateUser(userId, { fcmToken: pushToken });
-      if (!updateResult.offline) {
+      const updateResult = await FirebaseService.registerPushToken(userId, pushToken);
+      if (updateResult.success) {
         console.log('✅ Push token successfully saved to user profile');
       }
     }
@@ -209,6 +208,8 @@ export const AuthProvider = ({ children }) => {
             // Save to AsyncStorage for offline access
             await AsyncStorage.setItem('user', JSON.stringify(userData));
             await AsyncStorage.setItem('authToken', firebaseUser.accessToken);
+            // Restore this device's token after app relaunch as well as sign-in.
+            registerPushToken(firebaseUser.uid);
 
             // Setup Realtime Listener
             if (userResult.collection) {
@@ -716,6 +717,11 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     try {
       setIsLoading(true);
+      const signedInUserId = auth.currentUser?.uid || user?.id;
+      const deviceToken = PushNotificationService.expoPushToken;
+      if (signedInUserId && deviceToken) {
+        await FirebaseService.unregisterPushToken(signedInUserId, deviceToken);
+      }
       await signOut(auth);
       setUser(null);
       await AsyncStorage.removeItem('user');

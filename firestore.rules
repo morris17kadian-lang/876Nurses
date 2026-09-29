@@ -69,7 +69,7 @@ service cloud.firestore {
       // 1. User is creating their own profile (for initial signup)
       // 2. OR user is authenticated (and the app layer validates they're an admin)
       allow create: if isAuthenticated();
-      allow update: if isAuthenticated() && (request.auth.uid == adminId || request.resource.data.get('role') == 'admin');
+      allow update: if isAuthenticated() && (request.auth.uid == adminId || request.resource.data.get('role', null) == 'admin');
       allow delete: if isAdmin() && request.auth.uid != adminId;
     }
     
@@ -186,10 +186,11 @@ service cloud.firestore {
     
     // Notifications collection
     match /notifications/{notificationId} {
-      // Allow authenticated users to read their own notifications
-      allow read, list: if isAuthenticated();
-      // Allow any authenticated user to create notifications (e.g. booking/consultation events notifying admin)
-      allow create: if isAuthenticated();
+      // Notifications are private. User queries must constrain userId to the caller.
+      allow get, list: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      // Client-created cross-user notifications go through sendAppNotification.
+      // Admin SDK writes (Cloud Functions) bypass these client rules.
+      allow create: if false;
       allow delete: if isAdmin();
       // Allow admins full update access
       allow update: if isAdmin();
@@ -239,8 +240,14 @@ service cloud.firestore {
     // Payment settings collection
     match /paymentSettings/{settingId} {
       // Guest booking only needs the non-sensitive deposit policy fields.
-      allow read: if isAuthenticated() || settingId == 'bookingPolicy';
+      allow read: if isAuthenticated() || settingId in ['bookingPolicy', 'company', 'paymentInfo'];
       allow write: if isAdmin();
+    }
+
+    match /dataRequests/{requestId} {
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow update, delete: if isAdmin();
     }
 
     // Privacy settings collection
@@ -254,6 +261,25 @@ service cloud.firestore {
       allow read: if isAdmin();
       allow create: if isAuthenticated();
       allow update, delete: if false;
+    }
+
+    match /notificationPreferences/{userId} {
+      allow get: if isAuthenticated() && request.auth.uid == userId;
+      allow list: if false;
+      allow create, update: if isAuthenticated() &&
+        request.auth.uid == userId &&
+        request.resource.data.keys().hasOnly([
+          'pushNotifications', 'appointments', 'reminders', 'serviceUpdates',
+          'payments', 'systemNotifications', 'emailNotifications', 'updatedAt'
+        ]) &&
+        (!('pushNotifications' in request.resource.data) || request.resource.data.pushNotifications is bool) &&
+        (!('appointments' in request.resource.data) || request.resource.data.appointments is bool) &&
+        (!('reminders' in request.resource.data) || request.resource.data.reminders is bool) &&
+        (!('serviceUpdates' in request.resource.data) || request.resource.data.serviceUpdates is bool) &&
+        (!('payments' in request.resource.data) || request.resource.data.payments is bool) &&
+        (!('systemNotifications' in request.resource.data) || request.resource.data.systemNotifications is bool) &&
+        (!('emailNotifications' in request.resource.data) || request.resource.data.emailNotifications is bool);
+      allow delete: if isAuthenticated() && request.auth.uid == userId;
     }
   }
 }

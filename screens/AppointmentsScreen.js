@@ -32,6 +32,10 @@ import FygaroPaymentService from '../services/FygaroPaymentService';
 import { getNurseName, formatTimeTo12Hour } from '../utils/formatters';
 import NurseInfoCard from '../components/NurseInfoCard';
 import NotesAccordionList from '../components/NotesAccordionList';
+import SharedSettingsService from '../services/SharedSettingsService';
+
+const isShiftCompleteForPatient = (shift) =>
+  String(shift?.status || '').toLowerCase() === 'completed' || Boolean(shift?.finalCompletedAt);
 
 export default function AppointmentsScreen({ navigation, route }) {
   const { user } = useAuth();
@@ -71,45 +75,27 @@ export default function AppointmentsScreen({ navigation, route }) {
   // (see AppointmentContext.bookAppointment) so guest screens can find their own requests.
   const [guestIdentity, setGuestIdentity] = useState(null);
   const [guestCachedAppointments, setGuestCachedAppointments] = useState([]);
-  const [guestPendingDebug, setGuestPendingDebug] = useState(null);
 
   const loadGuestIdentity = React.useCallback(async () => {
     if (user) return;
     try {
-      const [raw, rawAppointments, rawPendingAppointments, rawDebugLog] = await Promise.all([
+      const [raw, rawAppointments, rawPendingAppointments] = await Promise.all([
         AsyncStorage.getItem('@876_guest_identity'),
         AsyncStorage.getItem('@876_appointments_guest'),
         AsyncStorage.getItem('@876_guest_pending_appointments'),
-        AsyncStorage.getItem('@876_guest_debug_log'),
       ]);
-      if (raw) {
-        setGuestIdentity(JSON.parse(raw));
-      }
+      const parsedIdentity = raw ? JSON.parse(raw) : null;
+      setGuestIdentity(parsedIdentity);
       const cachedAppointments = rawAppointments ? JSON.parse(rawAppointments) : [];
       const pendingAppointments = rawPendingAppointments ? JSON.parse(rawPendingAppointments) : [];
-      const parsedDebugLog = rawDebugLog ? JSON.parse(rawDebugLog) : null;
       const allCachedAppointments = [
         ...(Array.isArray(cachedAppointments) ? cachedAppointments : []),
         ...(Array.isArray(pendingAppointments) ? pendingAppointments : []),
       ];
       setGuestCachedAppointments(allCachedAppointments);
-      setGuestPendingDebug({
-        sharedCacheCount: Array.isArray(cachedAppointments) ? cachedAppointments.length : 0,
-        dedicatedPendingCount: Array.isArray(pendingAppointments) ? pendingAppointments.length : 0,
-        guestId: raw ? JSON.parse(raw)?.patientId || null : null,
-        lastSaveLog: parsedDebugLog,
-        loadedAt: new Date().toISOString(),
-      });
-      console.log('[GuestPendingDebug] Loaded guest appointment cache', {
-        sharedCacheCount: Array.isArray(cachedAppointments) ? cachedAppointments.length : 0,
-        dedicatedPendingCount: Array.isArray(pendingAppointments) ? pendingAppointments.length : 0,
-        guestId: raw ? JSON.parse(raw)?.patientId || null : null,
-        lastSaveLog: parsedDebugLog,
-      });
     } catch (error) {
       console.error('Failed to load guest identity:', error);
       setGuestCachedAppointments([]);
-      setGuestPendingDebug({ error: error?.message || 'Cache read failed' });
     }
   }, [user]);
 
@@ -129,7 +115,7 @@ export default function AppointmentsScreen({ navigation, route }) {
     }
   }, [route.params?.appointmentTab]);
 
-  const companyDetails = {
+  const [companyDetails, setCompanyDetails] = useState({
     companyName: '876 Nurses Home Care Services Limited',
     fullName: '876 NURSES HOME CARE SERVICES LIMITED',
     address: '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies',
@@ -137,9 +123,9 @@ export default function AppointmentsScreen({ navigation, route }) {
     email: '876nurses@gmail.com',
     taxId: '',
     website: 'www.876nurses.com'
-  };
+  });
 
-  const paymentInfo = {
+  const [paymentInfo, setPaymentInfo] = useState({
     bankAccounts: [
       { 
         id: '1', 
@@ -156,7 +142,20 @@ export default function AppointmentsScreen({ navigation, route }) {
     ],
     cashAccepted: true,
     posAvailable: false
-  };
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all([
+      SharedSettingsService.read('company'),
+      SharedSettingsService.read('paymentInfo'),
+    ]).then(([company, payments]) => {
+      if (!mounted) return;
+      if (company) setCompanyDetails((current) => ({ ...current, ...company }));
+      if (payments) setPaymentInfo((current) => ({ ...current, ...payments }));
+    }).catch(() => {});
+    return () => { mounted = false; };
+  }, []);
 
   // Handle deep linking/navigation from other screens
   useEffect(() => {
@@ -487,8 +486,12 @@ export default function AppointmentsScreen({ navigation, route }) {
     }
 
     return {
+      ...(appointment.assignedNurse && typeof appointment.assignedNurse === 'object'
+        ? appointment.assignedNurse
+        : {}),
       id: candidateId || appointment.nurseId || appointment.assignedNurseId,
       name: fallbackName,
+      fullName: fallbackName,
       nurseName: fallbackName,
       nurseCode:
         appointment.assignedNurse?.nurseCode ||
@@ -1449,16 +1452,21 @@ export default function AppointmentsScreen({ navigation, route }) {
   // Get pending appointments that need patient action
   const pendingAppointments = React.useMemo(() => {
     const appointmentMap = new Map();
-    [...appointments, ...guestCachedAppointments].forEach((appointment) => {
+    // Read cached entries first so the refreshed context copy wins when the same
+    // guest appointment has a newer server status (for example, nurse accepted).
+    [...guestCachedAppointments, ...appointments].forEach((appointment) => {
       if (!appointment) return;
-      const key = appointment.id || appointment.appointmentId || `${appointment.patientId}-${appointment.date}-${appointment.time}`;
+      if (!user && appointment.localId) {
+        appointmentMap.delete(String(appointment.localId));
+      }
+      const key = String(appointment.id || appointment.appointmentId || `${appointment.patientId}-${appointment.date}-${appointment.time}`);
       appointmentMap.set(key, appointment);
     });
 
     return Array.from(appointmentMap.values()).filter(appointment => {
-      const appointmentKey = appointment.id || appointment.appointmentId || `${appointment.patientId}-${appointment.date}-${appointment.time}`;
+      const appointmentKey = String(appointment.id || appointment.appointmentId || `${appointment.patientId}-${appointment.date}-${appointment.time}`);
       const isGuestCachedAppointment = !user && guestCachedAppointments.some((cached) => {
-        const cachedKey = cached?.id || cached?.appointmentId || `${cached?.patientId}-${cached?.date}-${cached?.time}`;
+        const cachedKey = String(cached?.id || cached?.appointmentId || `${cached?.patientId}-${cached?.date}-${cached?.time}`);
         return cachedKey === appointmentKey;
       });
       const matchesPatient = 
@@ -1482,31 +1490,13 @@ export default function AppointmentsScreen({ navigation, route }) {
 
   
   const approvedShifts = React.useMemo(() => {
-    const now = new Date();
-    now.setHours(0, 0, 0, 0); // Set to start of today for comparison
-    
-    const hasClockedOutForAnyNurse = (shift) => {
-      const clockByNurse = shift?.clockByNurse;
-      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
-      const entries = Object.values(clockByNurse);
-      if (!Array.isArray(entries) || entries.length === 0) return false;
-
-      return entries.some((entry) => {
-        if (!entry || typeof entry !== 'object') return false;
-        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt || entry.actualStartTime;
-        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
-        if (!inTime || !outTime) return false;
-        const inMs = Date.parse(inTime);
-        const outMs = Date.parse(outTime);
-        if (!Number.isFinite(outMs)) return false;
-        if (Number.isFinite(inMs)) return outMs > inMs;
-        return true;
-      });
-    };
-
     const filtered = shiftRequests.filter(shift => {
-      // Exclude completed/clocked-out shifts from Upcoming - they belong in Past
-      if (shift.status === 'completed' || hasClockedOutForAnyNurse(shift)) {
+      // Individual clock-outs can occur during a recurring series. The series
+      // stays Upcoming until the final clock-out marks it completed.
+      if (isShiftCompleteForPatient(shift)) {
+        return false;
+      }
+      if (['cancelled', 'canceled', 'denied', 'rejected'].includes(String(shift.status || '').toLowerCase())) {
         return false;
       }
       
@@ -1525,54 +1515,7 @@ export default function AppointmentsScreen({ navigation, route }) {
       // Enhanced client matching logic
       const matchesClient = matchesCurrentPatient(shift);
       
-      const { startDate, endDate, isRecurringShift } = getShiftScheduleBounds(shift);
-
-      // Active/clocked-in shifts should remain visible regardless of date
-      const isActiveClockedIn = shift.status === 'active' || shift.status === 'clocked-in' || shift.status === 'in-progress';
-
-      let dateValid = false;
-      try {
-        if (isActiveClockedIn) {
-          dateValid = true; // Keep active shifts visible even if date is in the past
-        } else if (startDate) {
-          const startClone = new Date(startDate.getTime());
-          startClone.setHours(0, 0, 0, 0);
-          if (startClone >= now) {
-            dateValid = true;
-          }
-        }
-
-        if (!dateValid && isRecurringShift) {
-          if (!endDate) {
-            dateValid = true; // Ongoing recurring schedule
-          } else {
-            const endClone = new Date(endDate.getTime());
-            endClone.setHours(0, 0, 0, 0);
-            dateValid = endClone >= now;
-          }
-        }
-      } catch (e) {
-        dateValid = false;
-      }
-
-      // Debug logging for Feb 11 shift
-      if (shift.date === '2026-02-11' || (startDate && startDate.toISOString().includes('2026-02-11'))) {
-        console.log('[PatientUpcoming][Feb11Shift]', {
-          shiftId: shift.id || shift._id,
-          service: shift.service,
-          status: shift.status,
-          date: shift.date,
-          startDate: startDate?.toISOString(),
-          isApproved,
-          matchesClient,
-          dateValid,
-          isActiveClockedIn,
-          willShow: isApproved && matchesClient && dateValid,
-          clockByNurse: shift.clockByNurse ? Object.keys(shift.clockByNurse) : null,
-        });
-      }
-      
-      return isApproved && matchesClient && dateValid;
+      return isApproved && matchesClient;
     });
     
     return filtered;
@@ -1580,38 +1523,11 @@ export default function AppointmentsScreen({ navigation, route }) {
 
   // Get completed shifts assigned to this patient for past appointments
   const completedShifts = React.useMemo(() => {
-    // Helper to check if any nurse has clocked out
-    const hasClockedOut = (shift) => {
-      if (!shift?.clockByNurse || typeof shift.clockByNurse !== 'object') return false;
-
-      const entries = Object.values(shift.clockByNurse);
-      if (!Array.isArray(entries) || entries.length === 0) return false;
-
-      return entries.some((entry) => {
-        if (!entry || typeof entry !== 'object') return false;
-
-        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt || entry.actualStartTime;
-        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
-
-        if (!inTime || !outTime) return false;
-
-        const inMs = Date.parse(inTime);
-        const outMs = Date.parse(outTime);
-
-        if (!Number.isFinite(outMs)) return false;
-        if (Number.isFinite(inMs)) return outMs > inMs;
-        return true;
-      });
-    };
-    
     const filtered = shiftRequests.filter(shift => {
-      // Some flows keep status as 'approved' even after clock-out; treat clock-out as completion.
-      const isCompleted = shift.status === 'completed' || hasClockedOut(shift);
-      
       // Match client
       const matchesClient = matchesCurrentPatient(shift);
       
-      return isCompleted && matchesClient;
+      return isShiftCompleteForPatient(shift) && matchesClient;
     });
     
     return filtered;
@@ -2324,40 +2240,6 @@ export default function AppointmentsScreen({ navigation, route }) {
           )}
         </TouchableWeb>
       </View>
-
-      {!user && (
-        <View style={styles.guestDebugPanel}>
-          <View style={styles.guestDebugHeaderRow}>
-            <Text style={styles.guestDebugTitle}>Guest booking diagnostics</Text>
-            <TouchableWeb onPress={loadGuestIdentity} activeOpacity={0.7}>
-              <Text style={styles.guestDebugRefresh}>Refresh</Text>
-            </TouchableWeb>
-          </View>
-          {guestPendingDebug ? (
-            <>
-              <Text style={styles.guestDebugText}>
-                Local Pending cache: {guestPendingDebug.dedicatedPendingCount ?? 0} · Shared cache: {guestPendingDebug.sharedCacheCount ?? 0}
-              </Text>
-              <Text style={styles.guestDebugText}>
-                Guest ID: {guestPendingDebug.guestId || 'not saved'}
-              </Text>
-              <Text style={styles.guestDebugText}>
-                Pending shown: {pendingAppointments.length} · Active tab: {activeTab}
-              </Text>
-              <Text style={styles.guestDebugText}>
-                Last save: {guestPendingDebug.lastSaveLog
-                  ? `${guestPendingDebug.lastSaveLog.result}${guestPendingDebug.lastSaveLog.message ? ` (${guestPendingDebug.lastSaveLog.message})` : ''} at ${guestPendingDebug.lastSaveLog.timestamp}`
-                  : 'no save recorded yet'}
-              </Text>
-              {guestPendingDebug.error && (
-                <Text style={styles.guestDebugError}>{guestPendingDebug.error}</Text>
-              )}
-            </>
-          ) : (
-            <Text style={styles.guestDebugText}>Loading guest cache…</Text>
-          )}
-        </View>
-      )}
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {displayedAppointments.length === 0 ? (
@@ -4214,44 +4096,6 @@ export default function AppointmentsScreen({ navigation, route }) {
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 32,
-  },
-  guestDebugPanel: {
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: COLORS.primary + '12',
-    borderWidth: 1,
-    borderColor: COLORS.primary + '35',
-    marginHorizontal: 20,
-    marginTop: 12,
-  },
-  guestDebugHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  guestDebugRefresh: {
-    fontSize: 11,
-    fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.primary,
-    textDecorationLine: 'underline',
-  },
-  guestDebugTitle: {
-    fontSize: 12,
-    fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.primary,
-    marginBottom: 4,
-  },
-  guestDebugText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.textLight,
-  },
-  guestDebugError: {
-    fontSize: 11,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.error,
-    marginTop: 4,
   },
   bookButton: {
     borderRadius: 12,

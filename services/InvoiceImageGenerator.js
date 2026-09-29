@@ -288,11 +288,14 @@ class InvoiceImageGenerator {
 
     const resolveBillTo = (data) => {
       const base = data?.billTo && typeof data.billTo === 'object' ? data.billTo : {};
+      const isStoreInvoice = data?.service === 'Store Purchase' || data?.serviceType === 'Store Purchase';
       return {
-        name: base.name || data?.clientName || data?.patientName || data?.customerName || 'N/A',
+        name: base.name || (isStoreInvoice
+          ? data?.patientName || data?.clientName || data?.customerName
+          : data?.clientName || data?.patientName || data?.customerName) || 'N/A',
         address: base.address || data?.clientAddress || data?.patientAddress || data?.address || 'N/A',
-        phone: base.phone || data?.clientPhone || data?.patientPhone || data?.phone || '',
-        email: base.email || data?.clientEmail || data?.patientEmail || data?.email || '',
+        phone: base.phone || (isStoreInvoice ? data?.patientPhone || data?.clientPhone : data?.clientPhone || data?.patientPhone) || data?.phone || '',
+        email: base.email || (isStoreInvoice ? data?.patientEmail || data?.clientEmail : data?.clientEmail || data?.patientEmail) || data?.email || '',
       };
     };
 
@@ -309,7 +312,7 @@ class InvoiceImageGenerator {
     const formatCurrency = (amount) => {
       const numericAmount = typeof amount === 'number' ? amount : parseFloat(amount || 0) || 0;
       const currencyCode = invoiceData?.currencyCode || invoiceData?.currency;
-      const currencyMap = { JMD: '$', USD: 'US$', CAD: 'CA$', EUR: '€' };
+      const currencyMap = { JMD: 'J$', USD: 'US$', CAD: 'CA$', EUR: '€' };
       const symbol = currencyMap[currencyCode] || (currencyCode ? `${currencyCode} ` : 'J$');
       return `${symbol}${numericAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     };
@@ -331,7 +334,7 @@ class InvoiceImageGenerator {
     const periodEnd = invoiceData?.periodEnd || invoiceData?.billingPeriodEnd || invoiceData?.recurringPeriodEnd;
     const showPeriod = !isStorePurchase && periodStart && periodEnd;
 
-    const companyName = invoiceData?.companyDetails?.companyName || '876 Nurses Home Care Services Limited';
+    const companyName = invoiceData?.companyDetails?.companyName || invoiceData?.companyDetails?.fullName || '876 Nurses Home Care Services Limited';
     const companyAddress =
       invoiceData?.companyDetails?.address ||
       '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies';
@@ -340,6 +343,8 @@ class InvoiceImageGenerator {
     const companyWebsite = invoiceData?.companyDetails?.website || 'www.876nurses.com';
 
     const paymentMethodDisplay = invoiceData?.paymentMethod || 'Bank Transfer';
+    const paymentInfo = invoiceData?.paymentInfo || {};
+    const bankAccounts = Array.isArray(paymentInfo.bankAccounts) ? paymentInfo.bankAccounts : [];
 
     const rawItems = Array.isArray(invoiceData?.items) ? invoiceData.items : [];
     const items = rawItems.length > 0
@@ -356,9 +361,9 @@ class InvoiceImageGenerator {
     const serviceRowsHTML = items
       .map((item) => {
         const description = item?.description || invoiceData?.service || '';
-        const quantity = item?.quantity ?? item?.hours ?? '';
-        const unitPrice = item?.unitPrice ?? item?.price ?? item?.rate ?? 0;
-        const total = item?.total ?? 0;
+        const quantity = item?.quantity || item?.hours || invoiceData?.hours || 1;
+        const unitPrice = item?.unitPrice || item?.price || item?.rate || invoiceData?.rate || 0;
+        const total = item?.amount || item?.total || (Number(quantity) * Number(unitPrice));
 
         return `
           <tr>
@@ -370,6 +375,24 @@ class InvoiceImageGenerator {
         `;
       })
       .join('');
+
+    const paymentDetailsHTML = bankAccounts.map((account) => {
+      const accountNumbers = Array.isArray(account?.accountNumbers) ? account.accountNumbers : [];
+      return `
+        <div class="pdfPaymentInfo">${safeText(account?.bankName || '')}</div>
+        ${account?.payee ? `<div class="pdfPaymentInfo">Payee: ${safeText(account.payee)}</div>` : ''}
+        ${account?.branch ? `<div class="pdfPaymentInfo">Branch: ${safeText(account.branch)}</div>` : ''}
+        ${accountNumbers.map((number) => `<div class="pdfPaymentInfo">${safeText(number.currency || '')}: ${safeText(number.number || '')}</div>`).join('')}
+        ${account?.swiftCode ? `<div class="pdfPaymentInfo">Swift: ${safeText(account.swiftCode)}</div>` : ''}
+      `;
+    }).join('');
+    const paidStatus = String(invoiceData?.status || '').toLowerCase() === 'paid';
+    const paymentHistoryHTML = Array.isArray(invoiceData?.payments)
+      ? invoiceData.payments.map((payment) => `<div class="pdfPaymentInfo">${safeText(payment?.type === 'deposit' ? 'Deposit' : 'Payment')} - ${safeText(formatDate(payment?.date))}: ${safeText(formatCurrency(payment?.amount || 0))}</div>`).join('')
+      : '';
+    const orderDetailsHTML = isStorePurchase && invoiceData?.orderDetails
+      ? `<div class="pdfPaymentInfo">Order status: ${safeText(String(invoiceData.orderDetails.status || '').toUpperCase())}</div>${invoiceData.orderDetails.completedDate ? `<div class="pdfPaymentInfo">Delivered: ${safeText(formatDate(invoiceData.orderDetails.completedDate))}</div>` : ''}`
+      : '';
 
     return `
 <!DOCTYPE html>
@@ -428,11 +451,10 @@ class InvoiceImageGenerator {
   </head>
   <body>
     <div class="invoicePreviewCard">
-      <div class="headerLogoWrap">
-        ${logoDataUri ? `<img class="headerLogo" src="${safeText(logoDataUri)}" />` : `<div class="logoText">876 Nurses</div>`}
-      </div>
       <div class="pdfHeaderTop">
-        <div class="logoBox"></div>
+        <div class="logoBox">
+          ${logoDataUri ? `<img class="headerLogo" src="${safeText(logoDataUri)}" />` : `<div class="logoText">876 Nurses</div>`}
+        </div>
         <div class="pdfInvoiceInfo">
           <div class="pdfInvoiceTitle">INVOICE</div>
           <div class="pdfInvoiceNumber">${safeText(invoiceNumberDisplay)}</div>
@@ -483,20 +505,28 @@ class InvoiceImageGenerator {
           <div class="pdfPaymentTitle">Payment Information</div>
           <div class="pdfPaymentInfo">Payment Method: ${safeText(paymentMethodDisplay)}</div>
           <div class="pdfPaymentInfo">Invoice Reference: ${safeText(invoiceReference)}</div>
-          <div class="pdfPaymentInfo">Contact: 876-288-7304</div>
-          <div class="pdfPaymentInfo">Email: info@876nurses.com</div>
+          ${paymentDetailsHTML}
+          ${paymentInfo.cashAccepted ? '<div class="pdfPaymentInfo">Cash accepted for home visits</div>' : ''}
+          ${paymentInfo.posAvailable ? '<div class="pdfPaymentInfo">POS Machine Available</div>' : ''}
+          ${orderDetailsHTML}
+          ${paymentHistoryHTML ? `<div class="pdfPaymentTitle" style="margin-top:8px">Payment History</div>${paymentHistoryHTML}` : ''}
         </div>
         <div class="pdfTotalsSection">
           <div class="pdfTotalRow">
             <div class="pdfTotalLabel">Deposit:</div>
-            <div class="pdfTotalValue">${safeText(formatCurrency(invoiceData.subtotal || invoiceData.total || invoiceData.amount || 0))}</div>
+              <div class="pdfTotalValue">${safeText(formatCurrency(invoiceData.subtotal || invoiceData.amount || invoiceData.total || 0))}</div>
           </div>
+          ${invoiceData?.paymentStatus === 'partial' && Number(invoiceData?.paidAmount) > 0 ? `
+            <div class="pdfTotalRow"><div class="pdfTotalLabel">Paid Amount:</div><div class="pdfTotalValue">${safeText(formatCurrency(invoiceData.paidAmount))}</div></div>
+            <div class="pdfTotalRow"><div class="pdfTotalLabel">Outstanding:</div><div class="pdfTotalValue">${safeText(formatCurrency(invoiceData.outstandingAmount ?? Math.max(0, Number(invoiceData.total || invoiceData.amount || 0) - Number(invoiceData.paidAmount || 0))))}</div></div>
+            <div class="pdfPaymentInfo" style="color:#b45309;font-weight:700">PARTIAL PAYMENT</div>
+          ` : ''}
           <div class="pdfBlueLine"></div>
           <div class="pdfFinalTotalRow">
             <div class="pdfFinalTotalLabel">Total Amount:</div>
-            <div class="pdfFinalTotalAmount">${safeText(formatCurrency(invoiceData.finalTotal || invoiceData.total || invoiceData.amount || 0))}</div>
+            <div class="pdfFinalTotalAmount">${safeText(formatCurrency(invoiceData.finalTotal || invoiceData.amount || invoiceData.total || 0))}</div>
           </div>
-          ${invoiceData?.status === 'Paid' ? `
+          ${paidStatus ? `
             <div class="paidStamp">
               <div class="paidStampText">PAID</div>
               ${invoiceData?.paymentMethod ? `<div class="paidMeta">${safeText(invoiceData.paymentMethod)}</div>` : ''}

@@ -9,6 +9,37 @@ import { getNurseName, formatAddress } from '../utils/formatters';
 
 const AppointmentContext = createContext();
 
+const appointmentDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === 'object') {
+    if (typeof value.toDate === 'function') return appointmentDate(value.toDate());
+    if (typeof value.seconds === 'number') return appointmentDate(value.seconds * 1000);
+  }
+  if (typeof value === 'string') {
+    const match = value.trim().match(/^([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})$/);
+    if (match) {
+      const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(match[1]);
+      if (month >= 0) {
+        const date = new Date(Number(match[3]), month, Number(match[2]));
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+    }
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const appointmentScheduledDay = (appointment) => {
+  const date = appointmentDate(
+    appointment?.date || appointment?.scheduledDate || appointment?.startDate || appointment?.appointmentDate
+  );
+  if (!date) return null;
+  const day = new Date(date.getTime());
+  day.setHours(0, 0, 0, 0);
+  return day;
+};
+
 export const useAppointments = () => {
   const context = useContext(AppointmentContext);
   if (!context) {
@@ -22,7 +53,6 @@ export const AppointmentProvider = ({ children }) => {
   const { createAppointmentNotification, createSystemNotification, sendNotificationToUser, scheduleAppointmentReminder } = useNotifications();
   const { nurses: nursesFromContext, incrementAssignedClients } = useNurses();
   const guestPendingStorageKey = '@876_guest_pending_appointments';
-  const guestDebugLogKey = '@876_guest_debug_log';
   
   const [appointments, setAppointments] = useState([]);
   const [nurses, setNurses] = useState([]);
@@ -98,26 +128,8 @@ export const AppointmentProvider = ({ children }) => {
     }
   };
 
-  const writeGuestDebugLog = async (entry) => {
-    try {
-      await AsyncStorage.setItem(guestDebugLogKey, JSON.stringify({
-        ...entry,
-        timestamp: new Date().toISOString(),
-      }));
-    } catch (logError) {
-      // Best-effort only; never let debug logging break booking.
-    }
-  };
-
   const saveGuestPendingAppointment = async (appointment) => {
-    if (user || !appointment) {
-      await writeGuestDebugLog({
-        step: 'save',
-        result: 'skipped',
-        reason: user ? 'user is authenticated' : 'no appointment provided',
-      });
-      return;
-    }
+    if (user || !appointment) return;
 
     try {
       const raw = await AsyncStorage.getItem(guestPendingStorageKey);
@@ -132,25 +144,8 @@ export const AppointmentProvider = ({ children }) => {
         guestPendingStorageKey,
         JSON.stringify(savedAppointments)
       );
-      console.log('[GuestPendingDebug] Saved local pending appointment', {
-        id: appointmentKey,
-        status: appointment.status,
-        patientId: appointment.patientId,
-        cacheCount: savedAppointments.length,
-      });
-      await writeGuestDebugLog({
-        step: 'save',
-        result: 'success',
-        appointmentId: appointmentKey,
-        cacheCount: savedAppointments.length,
-      });
     } catch (error) {
       console.error('Failed to save guest pending appointment:', error);
-      await writeGuestDebugLog({
-        step: 'save',
-        result: 'error',
-        message: error?.message || String(error),
-      });
     }
   };
 
@@ -168,20 +163,8 @@ export const AppointmentProvider = ({ children }) => {
         (item?.id || item?.appointmentId) !== appointmentId
       );
       await AsyncStorage.setItem(guestPendingStorageKey, JSON.stringify(remaining));
-      await writeGuestDebugLog({
-        step: 'remove',
-        result: 'success',
-        appointmentId,
-        cacheCount: remaining.length,
-      });
     } catch (error) {
       console.error('Failed to remove guest pending appointment:', error);
-      await writeGuestDebugLog({
-        step: 'remove',
-        result: 'error',
-        appointmentId,
-        message: error?.message || String(error),
-      });
     }
   };
 
@@ -240,16 +223,77 @@ export const AppointmentProvider = ({ children }) => {
   // Refresh appointments from API
   const refreshAppointments = useCallback(async () => {
     if (!user) {
+      if (refreshInProgressRef.current) return;
+      refreshInProgressRef.current = true;
       try {
-        await loadGuestIdentity();
-        const storedAppointments = await AsyncStorage.getItem(getAppointmentsStorageKey());
-        const parsedAppointments = storedAppointments ? JSON.parse(storedAppointments) : [];
-        const migratedAppointments = Array.isArray(parsedAppointments)
-          ? parsedAppointments.map(migrateLegacyNotes)
-          : [];
-        setAppointments(migratedAppointments);
+        const identity = await loadGuestIdentity();
+        const [storedAppointments, storedPendingAppointments] = await Promise.all([
+          AsyncStorage.getItem(getAppointmentsStorageKey()),
+          AsyncStorage.getItem(guestPendingStorageKey),
+        ]);
+        const parseList = (raw) => {
+          if (!raw) return [];
+          try {
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (_) {
+            return [];
+          }
+        };
+        const byId = new Map();
+        [...parseList(storedAppointments), ...parseList(storedPendingAppointments)].forEach((appointment, index) => {
+          if (!appointment || typeof appointment !== 'object') return;
+          const id = String(appointment.id || appointment.appointmentId || `guest_${index}`);
+          byId.set(id, { ...(byId.get(id) || {}), ...appointment });
+        });
+
+        let guestAppointments = Array.from(byId.values());
+        const appointmentIds = guestAppointments
+          .map((appointment) => appointment.id || appointment.appointmentId)
+          .filter(Boolean);
+        if (appointmentIds.length && identity && (identity.patientId || identity.email)) {
+          const updates = await ApiService.getGuestAppointmentUpdates({
+            appointmentIds,
+            patientId: identity.patientId,
+            email: identity.email,
+            legacyAppointments: guestAppointments
+              .filter((appointment) => /^apt_\d+$/.test(String(appointment.id || appointment.appointmentId || '')))
+              .map((appointment) => ({
+                localId: appointment.id || appointment.appointmentId,
+                patientId: appointment.patientId,
+                patientEmail: appointment.patientEmail,
+                patientPhone: appointment.patientPhone,
+                service: appointment.service,
+                date: appointment.date,
+                time: appointment.time,
+                address: appointment.address,
+                createdAt: appointment.createdAt,
+              })),
+          });
+          const updatesById = new Map(updates.map((appointment) => [String(appointment.id), appointment]));
+          const updatesByLocalId = new Map(updates
+            .filter((appointment) => appointment.localId)
+            .map((appointment) => [String(appointment.localId), appointment]));
+          guestAppointments = guestAppointments.map((appointment) => {
+            const id = String(appointment.id || appointment.appointmentId || '');
+            const update = updatesByLocalId.get(id) || updatesById.get(id);
+            return update ? { ...appointment, ...update } : appointment;
+          });
+        }
+
+        guestAppointments = guestAppointments.map(migrateLegacyNotes);
+        const pendingGuestAppointments = guestAppointments.filter((appointment) =>
+          ['pending', 'assigned'].includes(String(appointment.status || '').toLowerCase())
+        );
+        await Promise.all([
+          AsyncStorage.setItem(getAppointmentsStorageKey(), JSON.stringify(guestAppointments)),
+          AsyncStorage.setItem(guestPendingStorageKey, JSON.stringify(pendingGuestAppointments)),
+        ]);
+        setAppointments(guestAppointments);
       } catch (error) {
         console.error('Failed to refresh guest appointments:', error);
+      } finally {
+        refreshInProgressRef.current = false;
       }
       return;
     }
@@ -616,11 +660,6 @@ export const AppointmentProvider = ({ children }) => {
     setAppointments(updatedAppointments);
     await saveAppointments(updatedAppointments);
     await saveGuestPendingAppointment(newAppointment);
-    console.log('[GuestPendingDebug] Local fallback booking saved', {
-      id: newAppointment.id,
-      reason,
-      isGuest: !user,
-    });
 
     // Try to send notification to admin
     try {
@@ -818,12 +857,6 @@ export const AppointmentProvider = ({ children }) => {
         setAppointments(updatedAppointments);
         await saveAppointments(updatedAppointments);
         await saveGuestPendingAppointment(newAppointment);
-        console.log('[GuestPendingDebug] Booking completed', {
-          id: newAppointment.id,
-          status: newAppointment.status,
-          patientId: newAppointment.patientId,
-          isGuest: !user,
-        });
 
         // Refresh appointments from backend to get the latest state
         setTimeout(() => {
@@ -834,25 +867,18 @@ export const AppointmentProvider = ({ children }) => {
         return newAppointment;
       }
 
-      // response.success was falsy but no exception was thrown (ApiService.makeRequest
-      // swallows errors internally and returns {success:false} instead of throwing).
-      // Without this branch, the function would silently return undefined here with
-      // zero persistence and zero logging. Fall back to the same local-save path used
-      // in the catch block below.
-      console.error('⚠️ Booking API returned success:false, saving locally:', response?.error);
-      await writeGuestDebugLog({
-        step: 'save',
-        result: 'error',
-        message: response?.error || 'Booking API returned success:false',
-      });
+      // ApiService.makeRequest can return success:false without throwing. Guests
+      // need a real server record, since admins and nurses cannot see local data.
+      console.error('⚠️ Booking API returned success:false:', response?.error);
+      if (!user) {
+        throw new Error(response?.error || 'Unable to save the appointment. Please try again.');
+      }
       return await saveLocalFallbackAppointment(appointmentData, 'api-returned-failure');
     } catch (error) {
-      console.error('⚠️ API call failed, saving locally:', error.message);
-      await writeGuestDebugLog({
-        step: 'save',
-        result: 'error',
-        message: error?.message || 'Booking API threw an exception',
-      });
+      console.error('⚠️ Appointment booking failed:', error.message);
+      // A guest request must exist on the server before it can be assigned or
+      // accepted. A local-only copy would misleadingly stay Pending forever.
+      if (!user) throw error;
       return await saveLocalFallbackAppointment(appointmentData, 'api-threw-exception');
     }
   };
@@ -1004,6 +1030,19 @@ export const AppointmentProvider = ({ children }) => {
         await saveAppointments(updatedAppointments);
         
         const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+        const assignedNurse = [...(nursesFromContext || []), ...(nurses || [])].find((nurse) => {
+          const ids = [nurse?.id, nurse?._id, nurse?.uid, nurse?.nurseId, nurse?.nurseCode, nurse?.code]
+            .filter(Boolean)
+            .map(String);
+          return [appointment?.nurseId, appointment?.assignedNurseId, user?.id, user?.nurseCode, user?.code]
+            .filter(Boolean)
+            .map(String)
+            .some((id) => ids.includes(id));
+        });
+        const acceptingNurseName =
+          user?.fullName || user?.name || user?.displayName || user?.username ||
+          appointment?.nurseName || assignedNurse?.fullName || assignedNurse?.name ||
+          assignedNurse?.displayName || assignedNurse?.nurseCode || 'Assigned nurse';
 
         // Refresh from backend to ensure all users see the update
         setTimeout(() => {
@@ -1016,7 +1055,7 @@ export const AppointmentProvider = ({ children }) => {
             'admin-001',
             'admin',
             'Assignment Accepted',
-            `${appointment.nurseName} has accepted the appointment with ${appointment.patientName}`,
+            `${acceptingNurseName} has accepted the appointment with ${appointment.patientName}`,
             {
               appointmentId,
               type: 'assignment_accepted'
@@ -1026,7 +1065,7 @@ export const AppointmentProvider = ({ children }) => {
             appointment.patientId,
             'patient',
             'Appointment Confirmed',
-            `Your appointment for ${appointment.service} has been confirmed with ${appointment.nurseName}`,
+            `Your appointment for ${appointment.service} has been confirmed with ${acceptingNurseName}`,
             {
               appointmentId,
               type: 'appointment_confirmed'
@@ -1550,46 +1589,6 @@ export const AppointmentProvider = ({ children }) => {
   // Get upcoming appointments for patient (confirmed, scheduled, or assigned status)
   const getUpcomingAppointments = (patientId = null) => {
     const targetPatientId = patientId || user?.id;
-    const now = new Date();
-    now.setHours(0, 0, 0, 0); // Set to start of today for comparison
-
-    const coerceToDateSafe = (value) => {
-      if (!value) return null;
-      if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-      
-      // Handle formatted date strings like "Feb 10, 2026"
-      if (typeof value === 'string') {
-        const dateMatch = value.match(/([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})/);
-        if (dateMatch) {
-          const [_, monthStr, dayStr, yearStr] = dateMatch;
-          const monthIndex = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(monthStr);
-          if (monthIndex >= 0) {
-            const d = new Date(parseInt(yearStr, 10), monthIndex, parseInt(dayStr, 10));
-            if (!Number.isNaN(d.getTime())) {
-              return d;
-            }
-          }
-        }
-      }
-      
-      if (typeof value === 'string' || typeof value === 'number') {
-        const d = new Date(value);
-        return Number.isNaN(d.getTime()) ? null : d;
-      }
-      if (typeof value === 'object') {
-        // Firestore Timestamp
-        if (typeof value.toDate === 'function') {
-          const d = value.toDate();
-          return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
-        }
-        // Serialized timestamp-like { seconds }
-        if (typeof value.seconds === 'number') {
-          const d = new Date(value.seconds * 1000);
-          return Number.isNaN(d.getTime()) ? null : d;
-        }
-      }
-      return null;
-    };
     
     const filtered = appointments.filter(apt => {
       const matches =
@@ -1609,34 +1608,15 @@ export const AppointmentProvider = ({ children }) => {
         apt.status === 'clocked-in' ||
         apt.status === 'in-progress';
       
-      // Parse the date safely - default to false to exclude unparseable dates from upcoming
-      let dateValid = false;
-      try {
-        const rawDate =
-          apt.date ||
-          apt.scheduledDate ||
-          apt.startDate ||
-          apt.appointmentDate ||
-          null;
-        const aptDate = coerceToDateSafe(rawDate);
-        if (aptDate) {
-          aptDate.setHours(0, 0, 0, 0);
-          // Appointment is upcoming if it's today or in the future
-          dateValid = aptDate >= now;
-        }
-      } catch (e) {
-        console.log('Date parse error for upcoming appointment:', apt.date, e);
-        // Default to false - don't show appointments we can't parse dates for
-        dateValid = false;
-      }
-      
-      return matches && statusMatch && dateValid;
+      // A missed scheduled date does not complete the visit. Keep it in Upcoming
+      // until the nurse clocks out and the appointment becomes completed.
+      return matches && statusMatch;
     });
     
     return filtered.sort((a, b) => {
       try {
-        const dateA = coerceToDateSafe(a.date || a.scheduledDate || a.startDate || a.appointmentDate || null);
-        const dateB = coerceToDateSafe(b.date || b.scheduledDate || b.startDate || b.appointmentDate || null);
+        const dateA = appointmentScheduledDay(a);
+        const dateB = appointmentScheduledDay(b);
         if (!dateA && !dateB) return 0;
         if (!dateA) return 1;
         if (!dateB) return -1;
@@ -1647,14 +1627,27 @@ export const AppointmentProvider = ({ children }) => {
     });
   };
 
-  // Get appointment history for patient (completed appointments)
+  // The visit enters Past on completion or cancellation, not on its scheduled date.
   const getAppointmentHistory = (patientId = null) => {
     const targetPatientId = patientId || user?.id;
-    
-    return appointments.filter(apt => 
-      (apt.patientId === targetPatientId || String(apt.patientId) === String(targetPatientId)) && 
-      apt.status === 'completed'
-    ).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
+
+    return appointments.filter((apt) => {
+      const matches =
+        apt.patientId === targetPatientId ||
+        String(apt.patientId) === String(targetPatientId) ||
+        apt.clientId === targetPatientId ||
+        String(apt.clientId) === String(targetPatientId) ||
+        apt.userId === targetPatientId ||
+        String(apt.userId) === String(targetPatientId) ||
+        (apt.patientName && user?.name && String(apt.patientName).toLowerCase() === String(user.name).toLowerCase());
+      if (!matches) return false;
+      const status = String(apt.status || '').toLowerCase();
+      return ['completed', 'cancelled', 'canceled', 'denied', 'rejected'].includes(status);
+    }).sort((a, b) => {
+      const dateA = appointmentScheduledDay(a) || appointmentDate(a.completedAt) || appointmentDate(a.updatedAt);
+      const dateB = appointmentScheduledDay(b) || appointmentDate(b.completedAt) || appointmentDate(b.updatedAt);
+      return (dateB?.getTime() || 0) - (dateA?.getTime() || 0);
+    });
   };
 
   // Get appointments by role and filters
@@ -1874,20 +1867,9 @@ export const AppointmentProvider = ({ children }) => {
       
       return () => clearInterval(refreshInterval);
     } else {
-      loadGuestIdentity().then(() => {
-        AsyncStorage.getItem(getAppointmentsStorageKey())
-          .then((storedAppointments) => {
-            const parsedAppointments = storedAppointments ? JSON.parse(storedAppointments) : [];
-            const migratedAppointments = Array.isArray(parsedAppointments)
-              ? parsedAppointments.map(migrateLegacyNotes)
-              : [];
-            setAppointments(migratedAppointments);
-          })
-          .catch((error) => {
-            console.error('Failed to load guest appointments:', error);
-            setAppointments([]);
-          });
-      });
+      refreshAppointments();
+      const refreshInterval = setInterval(refreshAppointments, 30000);
+      return () => clearInterval(refreshInterval);
     }
   }, [user?.id]); // Only trigger when user ID changes, not on every user object change
 

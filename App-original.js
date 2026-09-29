@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -69,10 +69,12 @@ import AdminManagementHubScreen from './screens/AdminManagementHubScreen';
 import TestPayslipScreen from './screens/TestPayslipScreen';
 
 import { COLORS, GRADIENTS } from './constants';
+import PushNotificationService from './services/PushNotificationService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
+const navigationRef = createNavigationContainerRef();
 
 const linking = {
   prefixes: ['nurses876://'],
@@ -386,7 +388,7 @@ function AdminDashboardNavigator() {
         )}
       </Stack.Screen>
       <Stack.Screen name="Notifications" component={NotificationsScreen} />
-      <Stack.Screen name="Profile" component={ProfileScreen} />
+      <Stack.Screen name="Profile" component={AdminProfileScreen} />
       <Stack.Screen name="InvoiceManagement" component={InvoiceManagementScreen} />
       <Stack.Screen name="InvoiceDisplay" component={InvoiceScreen} />
       <Stack.Screen name="PaymentWebview" component={PaymentWebviewScreen} />
@@ -537,7 +539,23 @@ function AppNavigator() {
         userRole={user?.role}
         userId={user?.id}
       />
-      <NavigationContainer linking={linking}>
+      <NavigationContainer
+        ref={navigationRef}
+        linking={linking}
+        onReady={() => {
+          PushNotificationService.setNavigationHandler((intent) => {
+            if (intent && navigationRef.isReady()) {
+              navigationRef.navigate(intent.screen || 'Notifications', intent.params || {});
+              return true;
+            }
+            return false;
+          });
+          const pendingIntent = PushNotificationService.getPendingNavigation();
+          if (pendingIntent) {
+            navigationRef.navigate(pendingIntent.screen || 'Notifications', pendingIntent.params || {});
+          }
+        }}
+      >
         {user ? (
           isAdmin ? <AdminDashboardNavigator /> : 
           isNurse ? <NurseNavigator /> : 

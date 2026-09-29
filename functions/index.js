@@ -1041,6 +1041,514 @@ const sendQueuedEmailOnCreateHandler = async (snap) => {
 };
 
 // Export functions — Gen 2 (Cloud Run-based, no App Engine required)
+const notificationCollection = () => admin.firestore().collection('notifications');
+
+const getUserProfile = async (uid) => {
+  const db = admin.firestore();
+  for (const collectionName of ['admins', 'nurses', 'users', 'patients']) {
+    const snapshot = await db.collection(collectionName).doc(String(uid)).get();
+    if (snapshot.exists) {
+      const profile = snapshot.data() || {};
+      return {
+        id: snapshot.id,
+        ...profile,
+        role: collectionName === 'admins' ? 'admin'
+          : collectionName === 'nurses' ? 'nurse'
+            : normalizeString(profile.role) || (collectionName === 'patients' ? 'patient' : 'customer'),
+        collectionName,
+      };
+    }
+  }
+  return null;
+};
+
+const resolveNotificationRecipients = async (targetUserId, targetRole) => {
+  const db = admin.firestore();
+  const requestedId = String(targetUserId || '').trim();
+  const role = normalizeString(targetRole);
+  const collections = role === 'admin' || role === 'superadmin'
+    ? ['admins']
+      : role === 'nurse'
+        ? ['nurses', 'users']
+        : role === 'patient' || role === 'customer'
+          ? ['users', 'patients']
+          : ['admins', 'nurses', 'users', 'patients'];
+
+  for (const collectionName of collections) {
+    const direct = await db.collection(collectionName).doc(requestedId).get();
+    if (direct.exists) return [{ id: direct.id, ...direct.data(), collectionName }];
+  }
+
+  // Legacy app versions addressed staff with labels such as ADMIN001/admin-001.
+  // Resolve those labels to current Firebase profile IDs instead of writing an
+  // unreachable notification document under the legacy string.
+  const fields = role === 'admin' || role === 'superadmin'
+    ? ['adminCode', 'code', 'staffId', 'userId', 'username']
+      : role === 'nurse'
+        ? ['nurseCode', 'code', 'staffId', 'userId', 'username']
+        : role === 'patient' || role === 'customer'
+          ? ['userId', 'clientId', 'patientId', 'username']
+          : ['adminCode', 'nurseCode', 'code', 'staffId', 'userId', 'clientId', 'patientId', 'username'];
+  for (const collectionName of collections) {
+    for (const field of fields) {
+      const matches = await db.collection(collectionName).where(field, '==', requestedId).limit(1).get();
+      if (!matches.empty) {
+        const match = matches.docs[0];
+        return [{ id: match.id, ...match.data(), collectionName }];
+      }
+    }
+  }
+
+  if (role === 'admin' || role === 'superadmin') {
+    const admins = await db.collection('admins').get();
+    return admins.docs
+      .filter((docSnap) => docSnap.data()?.isActive !== false)
+      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data(), collectionName: 'admins' }));
+  }
+  return [];
+};
+
+exports.registerDevicePushToken = onCall({
+  region: 'us-central1',
+  serviceAccount: getRuntimeServiceAccountEmail(),
+}, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in to register this device.');
+  const token = String(request.data?.token || '').trim();
+  if (!token.startsWith('ExponentPushToken')) {
+    throw new HttpsError('invalid-argument', 'A valid Expo push token is required.');
+  }
+
+  const db = admin.firestore();
+  const owner = await getUserProfile(request.auth.uid);
+  if (!owner) throw new HttpsError('not-found', 'Your user profile was not found.');
+
+  const batch = db.batch();
+  for (const collectionName of ['admins', 'nurses', 'users', 'patients']) {
+    const snapshots = await Promise.all([
+      db.collection(collectionName).where('pushTokens', 'array-contains', token).get(),
+      db.collection(collectionName).where('expoPushToken', '==', token).get(),
+      db.collection(collectionName).where('pushToken', '==', token).get(),
+      db.collection(collectionName).where('fcmToken', '==', token).get(),
+    ]);
+    const documents = new Map();
+    snapshots.forEach((snapshot) => snapshot.docs.forEach((docSnap) => documents.set(docSnap.ref.path, docSnap)));
+    documents.forEach((docSnap) => {
+      if (docSnap.id === request.auth.uid && collectionName === owner.collectionName) return;
+      const profile = docSnap.data() || {};
+      const patch = { pushTokens: admin.firestore.FieldValue.arrayRemove(token) };
+      if (profile.expoPushToken === token) patch.expoPushToken = admin.firestore.FieldValue.delete();
+      if (profile.pushToken === token) patch.pushToken = admin.firestore.FieldValue.delete();
+      if (profile.fcmToken === token) patch.fcmToken = admin.firestore.FieldValue.delete();
+      batch.set(docSnap.ref, patch, { merge: true });
+    });
+  }
+
+  const ownerRef = db.collection(owner.collectionName).doc(request.auth.uid);
+  batch.set(ownerRef, {
+    expoPushToken: token,
+    fcmToken: token,
+    pushTokens: admin.firestore.FieldValue.arrayUnion(token),
+    pushTokenUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await batch.commit();
+  return { success: true };
+});
+
+exports.deleteOwnAccount = onCall({
+  region: 'us-central1',
+  serviceAccount: getRuntimeServiceAccountEmail(),
+}, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in to delete your account.');
+  const uid = request.auth.uid;
+  const db = admin.firestore();
+  const refs = new Map();
+  const addSnapshot = (snapshot) => snapshot.docs.forEach((docSnap) => refs.set(docSnap.ref.path, docSnap.ref));
+
+  const relatedCollections = [
+    ['appointments', ['userId', 'patientId', 'clientId']],
+    ['invoices', ['userId', 'patientId', 'clientId', 'customerId']],
+    ['notifications', ['userId']],
+    ['shiftRequests', ['requestedBy', 'requestedByUid', 'clientId', 'patientId']],
+    ['storeOrders', ['customerId', 'userId']],
+  ];
+  for (const [collectionName, fields] of relatedCollections) {
+    for (const field of fields) {
+      addSnapshot(await db.collection(collectionName).where(field, '==', uid).get());
+    }
+  }
+
+  ['admins', 'nurses', 'users', 'patients'].forEach((collectionName) => {
+    refs.set(`${collectionName}/${uid}`, db.collection(collectionName).doc(uid));
+  });
+  ['privacySettings', 'notificationPreferences'].forEach((collectionName) => {
+    refs.set(`${collectionName}/${uid}`, db.collection(collectionName).doc(uid));
+  });
+
+  const allRefs = Array.from(refs.values());
+  for (let index = 0; index < allRefs.length; index += 400) {
+    const batch = db.batch();
+    allRefs.slice(index, index + 400).forEach((ref) => batch.delete(ref));
+    await batch.commit();
+  }
+
+  try {
+    await admin.auth().deleteUser(uid);
+  } catch (error) {
+    if (error?.code !== 'auth/user-not-found') throw error;
+  }
+  return { success: true, deletedDocuments: allRefs.length };
+});
+
+const linkedNurseRecipients = async (sender, recipient, data) => {
+  const requestIds = [data?.shiftRequestId, data?.requestId, data?.appointmentId, data?.relatedAppointmentId, data?.shiftId, data?.coverageRequestId]
+    .filter(Boolean).map(String);
+  const identityValues = (profile) => [
+    profile?.id, profile?.uid, profile?.userId, profile?.nurseId,
+    profile?.nurseCode, profile?.staffId, profile?.code, profile?.username,
+  ].filter(Boolean).map(String);
+  const senderIds = new Set(identityValues(sender));
+  const recipientIds = new Set(identityValues(recipient));
+  const participantFields = [
+    'nurseId', 'nurseUid', 'assignedNurseId', 'assignedNurseUid', 'primaryNurseId',
+    'primaryNurseUid', 'backupNurseId', 'backupNurseUid', 'createdBy', 'createdByUid',
+    'userId', 'requestedBy', 'requestedByUid',
+  ];
+  for (const requestId of requestIds) {
+    for (const collectionName of ['shiftRequests', 'appointments']) {
+      const snapshot = await admin.firestore().collection(collectionName).doc(requestId).get();
+      if (!snapshot.exists) continue;
+      const record = snapshot.data() || {};
+      const ids = participantFields.map((field) => record[field]).filter(Boolean).map(String);
+      for (const key of ['backupNurses', 'backupNurseIds', 'backupNurseUids']) {
+        const value = record[key];
+        if (Array.isArray(value)) {
+          value.forEach((entry) => {
+            const id = typeof entry === 'object' ? entry?.nurseId || entry?.nurseUid || entry?.id || entry?.uid : entry;
+            if (id) ids.push(String(id));
+          });
+        }
+      }
+      if (ids.some((id) => senderIds.has(id)) && ids.some((id) => recipientIds.has(id))) return true;
+    }
+  }
+  return false;
+};
+
+const notificationPreferenceAllows = (prefs, type) => {
+  if (!prefs) prefs = {};
+  if (prefs.pushNotifications === false) return false;
+  const normalizedType = normalizeString(type);
+  // Chat notifications are intentionally disabled across the app.
+  if (/chat|message/.test(normalizedType)) return false;
+  if (/appointment|shift|assignment|coverage|clock|booking|schedule/.test(normalizedType)) {
+    return prefs.appointments !== false;
+  }
+  if (/reminder/.test(normalizedType)) return prefs.reminders !== false;
+  if (/service|store|order/.test(normalizedType)) return prefs.serviceUpdates !== false;
+  if (/payment|invoice|payslip|financial/.test(normalizedType)) return prefs.payments !== false;
+  if (/system|general/.test(normalizedType)) return prefs.systemNotifications === true;
+  return true;
+};
+
+exports.sendAppNotification = onCall({
+  region: 'us-central1',
+  serviceAccount: getRuntimeServiceAccountEmail(),
+}, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in to send notifications.');
+
+  const payload = request.data || {};
+  const targetUserId = String(payload.userId || '').trim();
+  const title = String(payload.title || '').trim();
+  const message = String(payload.message || '').trim();
+  const type = String(payload.type || 'system').slice(0, 80);
+  const data = payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data) ? payload.data : {};
+  const requestedTargetRole = normalizeString(payload.targetRole || data.targetRole);
+  const targetRole = requestedTargetRole || (/^admin/i.test(targetUserId) ? 'admin' : '');
+  if (!targetUserId || !title || !message || title.length > 160 || message.length > 2000) {
+    throw new HttpsError('invalid-argument', 'A recipient, title, and message are required.');
+  }
+
+  const db = admin.firestore();
+  const sender = await getUserProfile(request.auth.uid);
+  if (!sender) throw new HttpsError('permission-denied', 'A verified user profile is required.');
+  const senderIsAdmin = sender.role === 'admin' || sender.role === 'superadmin';
+  const recipients = await resolveNotificationRecipients(targetUserId, targetRole);
+  if (!recipients.length) throw new HttpsError('not-found', 'Notification recipient was not found.');
+
+  const safeRecipients = [];
+  for (const recipient of recipients) {
+    if (senderIsAdmin || recipient.id === request.auth.uid || recipient.collectionName === 'admins') {
+      safeRecipients.push(recipient);
+      continue;
+    }
+    if (
+      sender.role === 'nurse' &&
+      (recipient.collectionName === 'nurses' || normalizeString(recipient.role) === 'nurse') &&
+      await linkedNurseRecipients(sender, { ...recipient, id: recipient.id }, data)
+    ) {
+      safeRecipients.push(recipient);
+    }
+  }
+  if (!safeRecipients.length) {
+    throw new HttpsError('permission-denied', 'You may only notify yourself or an administrator.');
+  }
+
+  const cleanData = Object.fromEntries(Object.entries(data).filter(([, value]) => value !== undefined));
+  const result = [];
+  const pushedTokens = new Set();
+  for (const recipient of safeRecipients) {
+    const ref = await notificationCollection().add({
+      userId: recipient.id,
+      title,
+      message,
+      type,
+      data: cleanData,
+      read: false,
+      isRead: false,
+      senderId: request.auth.uid,
+      sentAt: new Date().toISOString(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    result.push({ id: ref.id, userId: recipient.id });
+    const recordPushResult = async (patch) => {
+      try {
+        await ref.update({ ...patch, pushAttemptedAt: admin.firestore.FieldValue.serverTimestamp() });
+      } catch (error) {
+        console.error('Could not save push result', { notificationId: ref.id, message: error?.message });
+      }
+    };
+
+    const preferencesRef = db.collection('notificationPreferences').doc(recipient.id);
+    const preferencesSnap = await preferencesRef.get();
+    const preferences = preferencesSnap.exists ? preferencesSnap.data() : null;
+    if (!notificationPreferenceAllows(preferences, type)) {
+      await recordPushResult({ pushStatus: 'disabled' });
+      continue;
+    }
+
+    const tokens = new Set([
+      recipient.expoPushToken,
+      recipient.pushToken,
+      recipient.fcmToken,
+      ...(Array.isArray(recipient.pushTokens) ? recipient.pushTokens : []),
+    ].filter((token) => typeof token === 'string' && token.startsWith('ExponentPushToken')));
+    if (!tokens.size) {
+      await recordPushResult({ pushStatus: 'no_token' });
+      continue;
+    }
+
+    try {
+      const tokenList = Array.from(tokens).filter((token) => !pushedTokens.has(token)).slice(0, 100);
+      if (!tokenList.length) {
+        await recordPushResult({ pushStatus: 'duplicate_device_skipped' });
+        continue;
+      }
+      tokenList.forEach((token) => pushedTokens.add(token));
+      const pushResponse = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify(tokenList.map((to) => ({
+          to,
+          title,
+          body: message,
+          sound: 'default',
+          data: { ...cleanData, notificationId: ref.id, type },
+        }))),
+      });
+      const responseBody = await pushResponse.json();
+      const tickets = Array.isArray(responseBody?.data)
+        ? responseBody.data
+        : responseBody?.data ? [responseBody.data] : [];
+      const ticketIds = tickets.filter((ticket) => ticket?.status === 'ok' && ticket.id).map((ticket) => ticket.id);
+      const pushErrors = tickets
+        .filter((ticket) => ticket?.status === 'error')
+        .map((ticket) => String(ticket?.details?.error || ticket?.message || 'unknown').slice(0, 120));
+      if (!pushResponse.ok || responseBody?.errors?.length) {
+        pushErrors.push(`gateway_http_${pushResponse.status}`);
+      }
+      await recordPushResult({
+        pushStatus: ticketIds.length === tokenList.length ? 'accepted_by_expo' : 'error',
+        pushTicketIds: ticketIds,
+        pushErrors: pushErrors.slice(0, 20),
+      });
+      console.info('Expo push gateway result', {
+        notificationId: ref.id,
+        tokenCount: tokenList.length,
+        acceptedCount: ticketIds.length,
+        errorCount: pushErrors.length,
+      });
+    } catch (pushError) {
+      await recordPushResult({ pushStatus: 'error', pushErrors: [String(pushError?.message || pushError).slice(0, 120)] });
+      console.error('Expo push delivery failed', { message: pushError?.message, notificationId: ref.id });
+    }
+  }
+
+  return { ...result[0], count: result.length };
+});
+
+// Guest bookings cannot read the appointments collection directly through
+// Firestore rules. This callable lets a guest refresh only appointment IDs
+// already saved on their device, after matching the stored patient ID or email.
+// Return scheduling fields only; never expose contact or address information.
+exports.getGuestAppointmentUpdates = onCall({
+  region: 'us-central1',
+  serviceAccount: getRuntimeServiceAccountEmail(),
+}, async (request) => {
+  const payload = request.data || {};
+  const appointmentIds = Array.isArray(payload.appointmentIds)
+    ? [...new Set(payload.appointmentIds.map((id) => String(id || '').trim()).filter(Boolean))].slice(0, 50)
+    : [];
+  const legacyAppointments = Array.isArray(payload.legacyAppointments)
+    ? payload.legacyAppointments.slice(0, 20)
+    : [];
+  const patientId = String(payload.patientId || '').trim().toLowerCase();
+  const email = String(payload.email || '').trim().toLowerCase();
+
+  if (!appointmentIds.length || (!patientId && !email)) {
+    throw new HttpsError('invalid-argument', 'Guest identity and appointment IDs are required.');
+  }
+
+  const db = admin.firestore();
+  const updates = [];
+  const nurseProfiles = new Map();
+  const buildUpdate = async (snapshot, appointment, localId = null) => {
+    const rawNurse = appointment.assignedNurse || appointment.nurse || null;
+    const nurseId = String(
+      appointment.nurseId || appointment.assignedNurseId ||
+      (typeof rawNurse === 'string' ? rawNurse : rawNurse?.id || rawNurse?._id) || ''
+    ).trim();
+    let profile = null;
+    if (nurseId) {
+      if (!nurseProfiles.has(nurseId)) {
+        nurseProfiles.set(nurseId, db.collection('nurses').doc(nurseId).get()
+          .then((nurseSnapshot) => nurseSnapshot.exists ? nurseSnapshot.data() || {} : null)
+          .catch(() => null));
+      }
+      profile = await nurseProfiles.get(nurseId);
+    }
+    const embedded = rawNurse && typeof rawNurse === 'object' ? rawNurse : {};
+    const nurseName = appointment.nurseName || appointment.assignedNurseName ||
+      getDisplayName(embedded) || getDisplayName(profile) || null;
+    const assignedNurse = nurseName ? {
+      id: nurseId || embedded.id || embedded._id || null,
+      name: nurseName,
+      fullName: nurseName,
+      specialization: profile?.specialization || profile?.specialty || embedded.specialization || embedded.specialty || null,
+    } : null;
+    return {
+      ...(localId ? { localId } : {}),
+      id: snapshot.id,
+      status: appointment.status || 'pending',
+      nurseId: nurseId || null,
+      nurseName,
+      assignedNurse,
+      acceptedAt: appointment.acceptedAt || appointment.confirmedAt || null,
+      updatedAt: appointment.updatedAt || null,
+    };
+  };
+  let foundAppointmentCount = 0;
+  const foundIds = new Set();
+  for (const appointmentId of appointmentIds) {
+    const snapshot = await db.collection('appointments').doc(appointmentId).get();
+    if (!snapshot.exists) continue;
+    foundAppointmentCount += 1;
+    foundIds.add(snapshot.id);
+
+    const appointment = snapshot.data() || {};
+    const storedIds = [appointment.patientId, appointment.clientId, appointment.userId]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    const storedEmails = [appointment.patientEmail, appointment.clientEmail, appointment.patient?.email]
+      .map((value) => String(value || '').trim().toLowerCase())
+      .filter(Boolean);
+    const identityMatches = Boolean(
+      (patientId && storedIds.includes(patientId)) ||
+      (email && storedEmails.includes(email))
+    );
+    if (!identityMatches) continue;
+
+    updates.push(await buildUpdate(snapshot, appointment));
+  }
+
+  // Older guest bookings were written successfully, then given a local apt_*
+  // ID because the client attempted a Firestore read that guests cannot make.
+  // Recover those bookings only when the caller supplies the exact details
+  // saved on the device; never expose a list based on an email alone.
+  const normalize = (value) => String(value || '').trim().toLowerCase();
+  const digits = (value) => String(value || '').replace(/\D/g, '');
+  const timeKey = (value) => {
+    const text = String(value || '').trim();
+    const match = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(am|pm)?$/i);
+    if (!match) return normalize(text);
+    let hour = Number(match[1]);
+    if (match[3]) hour = hour % 12 + (match[3].toLowerCase() === 'pm' ? 12 : 0);
+    return `${String(hour).padStart(2, '0')}:${match[2]}`;
+  };
+  const millis = (value) => {
+    if (value && typeof value.toMillis === 'function') return value.toMillis();
+    const parsed = new Date(value).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const resultsByPatientId = new Map();
+  for (const legacy of legacyAppointments) {
+    const localId = String(legacy?.localId || '').trim();
+    const legacyPatientId = String(legacy?.patientId || '').trim();
+    const legacyEmail = normalize(legacy?.patientEmail);
+    const legacyPhone = digits(legacy?.patientPhone);
+    const legacyService = normalize(legacy?.service);
+    const legacyDate = normalize(legacy?.date);
+    const legacyTime = timeKey(legacy?.time);
+    const legacyAddress = normalize(legacy?.address);
+    const legacyCreatedAt = millis(legacy?.createdAt);
+    if (
+      !/^apt_\d+$/.test(localId) || foundIds.has(localId) ||
+      !legacyPatientId || legacyPatientId.length > 200 ||
+      !legacyEmail || !legacyPhone || !legacyService || !legacyDate ||
+      !legacyTime || !legacyAddress || legacyCreatedAt === null ||
+      (normalize(legacyPatientId) !== patientId && legacyEmail !== email)
+    ) continue;
+
+    if (!resultsByPatientId.has(legacyPatientId)) {
+      const snapshot = await db.collection('appointments')
+        .where('patientId', '==', legacyPatientId)
+        .limit(100)
+        .get();
+      resultsByPatientId.set(legacyPatientId, snapshot.docs);
+    }
+    const matches = resultsByPatientId.get(legacyPatientId)
+      .map((snapshot) => ({ snapshot, appointment: snapshot.data() || {} }))
+      .filter(({ appointment }) =>
+        normalize(appointment.patientEmail || appointment.clientEmail) === legacyEmail &&
+        digits(appointment.patientPhone || appointment.clientPhone) === legacyPhone &&
+        normalize(appointment.service || appointment.appointmentType) === legacyService &&
+        normalize(appointment.scheduledDate || appointment.date || appointment.appointmentDate) === legacyDate &&
+        timeKey(appointment.scheduledTime || appointment.time || appointment.appointmentTime) === legacyTime &&
+        normalize(appointment.address || appointment.location) === legacyAddress &&
+        millis(appointment.createdAt) !== null &&
+        Math.abs(millis(appointment.createdAt) - legacyCreatedAt) <= 30 * 60 * 1000
+      )
+      .sort((left, right) =>
+        Math.abs(millis(left.appointment.createdAt) - legacyCreatedAt) -
+        Math.abs(millis(right.appointment.createdAt) - legacyCreatedAt)
+      );
+    if (!matches.length) continue;
+
+    const { snapshot, appointment } = matches[0];
+    updates.push(await buildUpdate(snapshot, appointment, localId));
+  }
+
+  console.info('Guest appointment status refresh completed', {
+    requestedCount: appointmentIds.length,
+    foundAppointmentCount,
+    matchedIdentityCount: updates.length,
+    recoveredCount: updates.filter((appointment) => appointment.localId).length,
+    statuses: updates.map((appointment) => appointment.status),
+    nurseProfilesFound: updates.filter((appointment) => appointment.assignedNurse).length,
+  });
+
+  return { appointments: updates };
+});
+
 exports.sendWelcomeEmailOnAuthCreate = functionsV1
   .region('us-central1')
   .runWith({ secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET] })

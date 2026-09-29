@@ -515,6 +515,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const isAdminUser =
     normalizedUserRole === 'admin' ||
     normalizedUserRole === 'administrator' ||
+    normalizedUserRole === 'superadmin' ||
     normalizedUserRole.startsWith('admin');
   const { unreadCount, sendNotificationToUser, refreshNotifications } = useNotifications();
   const insets = useSafeAreaInsets();
@@ -690,9 +691,12 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const [clockDetailsModalVisible, setClockDetailsModalVisible] = useState(false);
   const [clockDetailsPayload, setClockDetailsPayload] = useState(null);
   const [clockDetailsExpandedDayKey, setClockDetailsExpandedDayKey] = useState(null);
+  const [pendingClockDetailsOpen, setPendingClockDetailsOpen] = useState(false);
+  const [pendingNurseDetailsOpen, setPendingNurseDetailsOpen] = useState(false);
   const [reopenAppointmentDetailsAfterClock, setReopenAppointmentDetailsAfterClock] = useState(false);
   const [reopenRecurringDetailsAfterClock, setReopenRecurringDetailsAfterClock] = useState(false);
   const [reopenAppointmentDetailsAfterNurseModal, setReopenAppointmentDetailsAfterNurseModal] = useState(false);
+  const [reopenAppointmentDetailsAfterNurseDetails, setReopenAppointmentDetailsAfterNurseDetails] = useState(false);
   const [appointmentClockDetailsVisible, setAppointmentClockDetailsVisible] = useState(false);
   const [appointmentShowNotes, setAppointmentShowNotes] = useState(false);
   const [appointmentShiftNotes, setAppointmentShiftNotes] = useState('');
@@ -709,6 +713,17 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const [showPendingAppointmentActions, setShowPendingAppointmentActions] = useState(false);
   const [selectedNurseDetails, setSelectedNurseDetails] = useState(null);
   const [selectedShiftRequest, setSelectedShiftRequest] = useState(null);
+
+  useEffect(() => {
+    if (Platform.OS === 'ios' || appointmentDetailsModalVisible) return;
+    if (pendingNurseDetailsOpen) {
+      setPendingNurseDetailsOpen(false);
+      setNurseDetailsModalVisible(true);
+    } else if (pendingClockDetailsOpen) {
+      setPendingClockDetailsOpen(false);
+      setClockDetailsModalVisible(true);
+    }
+  }, [appointmentDetailsModalVisible, pendingNurseDetailsOpen, pendingClockDetailsOpen]);
 
   const DEBUG_ADMIN_APPT_NOTES = __DEV__ === true;
   const adminApptNotesDebugLoggedRef = React.useRef(new Set());
@@ -1961,6 +1976,12 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const openNurseDetailsModal = (details) => {
     if (!details) return;
     setSelectedNurseDetails(details);
+    if (appointmentDetailsModalVisible) {
+      setReopenAppointmentDetailsAfterNurseDetails(true);
+      setPendingNurseDetailsOpen(true);
+      setAppointmentDetailsModalVisible(false);
+      return;
+    }
     setNurseDetailsModalVisible(true);
   };
 
@@ -2884,26 +2905,6 @@ export default function AdminDashboardScreen({ navigation, route }) {
               // Regular one-off appointment assignment
               await assignNurse(selectedAppointment.id, nurse.id);
               
-              // Send notification to the assigned nurse
-              try {
-                await sendNotificationToUser(
-                  nurse.id,
-                  'nurse',
-                  'New Appointment Assignment',
-                  `You have been assigned to ${selectedAppointment.patientName || 'a patient'} for ${selectedAppointment.service || 'an appointment'} on ${selectedAppointment.date || selectedAppointment.preferredDate || 'TBD'}`,
-                  {
-                    type: 'appointment_assigned',
-                    appointmentId: selectedAppointment.id,
-                    patientName: selectedAppointment.patientName,
-                    service: selectedAppointment.service,
-                    date: selectedAppointment.date || selectedAppointment.preferredDate
-                  }
-                );
-                // Notification sent to nurse
-              } catch (notifError) {
-                // Failed to send notification to nurse
-              }
-              
               Alert.alert('Success', `Appointment has been assigned to ${nurse.name}!`);
               setAssignModalVisible(false);
               setSelectedAppointment(null);
@@ -3322,13 +3323,12 @@ export default function AdminDashboardScreen({ navigation, route }) {
     setReopenAppointmentDetailsAfterClock(Boolean(options?.reopenAppointmentDetails));
     setReopenRecurringDetailsAfterClock(Boolean(options?.reopenRecurringDetails));
     
-    // Close appointment details modal first
-    setAppointmentDetailsModalVisible(false);
-
-    // Open clock details modal after a short delay to allow the first modal to close cleanly
-    setTimeout(() => {
-      setClockDetailsModalVisible(true);
-    }, 500);
+    if (appointmentDetailsModalVisible) {
+      setPendingClockDetailsOpen(true);
+      setAppointmentDetailsModalVisible(false);
+      return;
+    }
+    setClockDetailsModalVisible(true);
   };
 
   const closeClockDetailsModal = () => {
@@ -6003,6 +6003,17 @@ export default function AdminDashboardScreen({ navigation, route }) {
         transparent={true}
         presentationStyle="overFullScreen"
         visible={appointmentDetailsModalVisible}
+        onDismiss={() => {
+          if (pendingNurseDetailsOpen) {
+            setPendingNurseDetailsOpen(false);
+            setNurseDetailsModalVisible(true);
+            return;
+          }
+          if (pendingClockDetailsOpen) {
+            setPendingClockDetailsOpen(false);
+            setClockDetailsModalVisible(true);
+          }
+        }}
         onRequestClose={() => {
           setAppointmentDetailsModalVisible(false);
           setAppointmentClockDetailsVisible(false);
@@ -6032,11 +6043,6 @@ export default function AdminDashboardScreen({ navigation, route }) {
             
             {selectedAppointmentDetails && (
               <>
-                {isAdminUser && (
-                  <Text style={{ fontSize: 11, color: '#b45309', paddingHorizontal: 16, paddingTop: 4 }}>
-                    DEBUG role={String(user?.role)} · status={String(selectedAppointmentDetails.status)} · isRecurring={String(selectedAppointmentDetails.isRecurring)} · isShiftRequest={String(selectedAppointmentDetails.isShiftRequest)}
-                  </Text>
-                )}
                 <ScrollView
                   style={styles.appointmentDetailsScroll}
                   contentContainerStyle={styles.appointmentDetailsContent}
@@ -6498,14 +6504,6 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                       nurseCode,
                                       staffCode: nurseCode,
                                     };
-                                    // In admin completed modal, still show clock details when any clock activity exists
-                                    if (hasClockIn || hasClockOut) {
-                                      const payload = extractClockDetailsFromRecord(clockEntryForAssigned);
-                                      if (payload) {
-                                        openClockDetailsModal('Clock Details', payload, { reopenAppointmentDetails: true });
-                                        return;
-                                      }
-                                    }
                                     openNurseDetailsModal(nurseForDetails);
                                   }}
                                 >
@@ -6960,9 +6958,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                     return (
                       <View style={styles.detailsSection}>
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <Text style={styles.sectionTitle}>Emergency Backup Nurses</Text>
-                          </View>
+                          <Text style={[styles.sectionTitle, { marginBottom: 0, flexShrink: 1 }]}>Emergency Backup Nurses</Text>
                           {isAdminUser && (
                             <TouchableWeb
                               onPress={() => openBackupNurseModal(selectedAppointmentDetails)}
@@ -7469,6 +7465,12 @@ export default function AdminDashboardScreen({ navigation, route }) {
             setTimeout(() => {
               setAssignModalVisible(true);
             }, 150);
+          }
+        }}
+        onDismiss={() => {
+          if (reopenAppointmentDetailsAfterNurseDetails) {
+            setReopenAppointmentDetailsAfterNurseDetails(false);
+            setAppointmentDetailsModalVisible(true);
           }
         }}
         nurse={selectedNurseDetails}
@@ -10196,10 +10198,13 @@ export default function AdminDashboardScreen({ navigation, route }) {
                       <View style={[styles.inputContainer, { marginBottom: 0 }]}>
                         <TextInput 
                           placeholder={nurseSelectionMode === 'backup' ? "Search nurse to add..." : "Search nurse name..."} 
-                          style={styles.input}
+                          style={[styles.input, { color: COLORS.text, backgroundColor: COLORS.white }]}
                           value={primaryNurseSearch}
                           onChangeText={setPrimaryNurseSearch}
                           placeholderTextColor={COLORS.textMuted}
+                          selectionColor={COLORS.primary}
+                          autoCapitalize="none"
+                          autoCorrect={false}
                         />
                       </View>
                    </View>
@@ -10211,21 +10216,44 @@ export default function AdminDashboardScreen({ navigation, route }) {
                       <Text style={[styles.sectionTitle, { marginBottom: 12, paddingHorizontal: 4 }]}>
                         Available Nurses
                       </Text>
-                      {availableNurses
-                      .filter(nurse => {
-                        const search = primaryNurseSearch.toLowerCase();
-                        const name = (nurse.name || nurse.fullName || '').toLowerCase();
-                        const code = (nurse.code || nurse.nurseCode || '').toLowerCase();
-                        return name.includes(search) || code.includes(search);
-                      })
-                      .map((nurse) => {
-                        const isBackupSelected = nurseSelectionMode === 'backup' && currentBackupNurses.some(b => b.nurseId === (nurse.id || nurse._id));
-                        
+                      {(() => {
+                        const search = String(primaryNurseSearch || '').trim().toLowerCase();
+                        const matchingNurses = availableNurses.filter((nurse) => {
+                          if (!nurse) return false;
+
+                          // Nurse records come from multiple sources and may use
+                          // different fields for their display name and staff code.
+                          const searchableValues = [
+                            getNurseDisplayName(nurse),
+                            nurse.firstName,
+                            nurse.lastName,
+                            nurse.username,
+                            nurse.email,
+                            nurse.contactEmail,
+                            nurse.code,
+                            nurse.nurseCode,
+                            nurse.staffCode,
+                            nurse.nurseId,
+                          ];
+                          return !search || searchableValues.some((value) =>
+                            String(value || '').toLowerCase().includes(search)
+                          );
+                        });
+
+                        if (matchingNurses.length === 0) {
+                          return (
+                            <Text style={{ color: COLORS.textMuted, textAlign: 'center', paddingVertical: 24 }}>
+                              {search ? 'No nurses match your search.' : 'No available nurses found.'}
+                            </Text>
+                          );
+                        }
+
+                        return matchingNurses.map((nurse) => {
                         return (
-                        <View key={nurse.id} style={styles.primaryNurseCard}>
-                           {nurse.profilePhoto || nurse.profileImage ? (
+                        <View key={String(nurse.id || nurse._id || nurse.uid || nurse.nurseId || getNurseAssignmentKey(nurse))} style={styles.primaryNurseCard}>
+                           {nurse.profilePhoto || nurse.profileImage || nurse.photoUrl ? (
                              <Image 
-                               source={{ uri: nurse.profilePhoto || nurse.profileImage }}
+                               source={{ uri: nurse.profilePhoto || nurse.profileImage || nurse.photoUrl }}
                                style={styles.primaryNurseAvatar}
                              />
                            ) : (
@@ -10235,7 +10263,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                            )}
                           <View style={styles.primaryNurseInfo}>
                             <Text style={styles.primaryNurseName} numberOfLines={1}>
-                              {nurse.name || nurse.fullName}
+                              {getNurseDisplayName(nurse)}
                             </Text>
                           </View>
                           <TouchableOpacity 
@@ -10266,8 +10294,9 @@ export default function AdminDashboardScreen({ navigation, route }) {
                             </LinearGradient>
                           </TouchableOpacity>
                         </View>
-                      );
-                      })}
+                        );
+                        });
+                      })()}
                       <View style={{ height: 20 }} />
                    </ScrollView>
                 </KeyboardAvoidingView>

@@ -23,17 +23,13 @@ import InvoiceImageGenerator from './InvoiceImageGenerator';
 import ApiService from './ApiService';
 import EmailService from './EmailService';
 import FirebaseEmailQueueService from './FirebaseEmailQueueService';
+import SharedSettingsService from './SharedSettingsService';
 
 class InvoiceService {
   static ADMIN_PAYMENT_GENERAL_SETTINGS_KEY = 'adminPaymentGeneralSettings';
 
   static async _getAdminPaymentGeneralSettings() {
-    try {
-      const raw = await AsyncStorage.getItem(this.ADMIN_PAYMENT_GENERAL_SETTINGS_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
+    return SharedSettingsService.read('general');
   }
   static ADMIN_NOTIFICATION_CATEGORIES = {
     ALL: 'all',
@@ -2104,44 +2100,39 @@ class InvoiceService {
 
       // Always generate a fresh PDF from the current invoice object so the shared
       // document matches what the UI is previewing (avoids stale/mismatched pdfUri).
-      let uriToShare = null;
-      try {
-        const items = Array.isArray(invoice.items) && invoice.items.length > 0
+      let uriToShare;
+      const items = Array.isArray(invoice.items) && invoice.items.length > 0
           ? invoice.items
           : [
               {
-                description: invoice.service || 'Service',
+                description: invoice.description || invoice.service || 'Service',
                 detailedDescription: invoice.service
                   ? `Professional ${String(invoice.service).toLowerCase()} services provided`
                   : 'Professional healthcare services',
-                quantity: Number(invoice.hours || 1),
-                price: Number(invoice.rate || invoice.total || 0),
-                total: Number(invoice.total || 0),
+                quantity: Number(invoice.hours || invoice.quantity || 1),
+                price: Number(invoice.rate || invoice.amount || invoice.total || 0),
+                total: Number(invoice.amount || invoice.total || 0),
                 serviceDates: invoice.serviceDate || invoice.date || '',
                 nurseNames: invoice.nurseName || 'Care Professional',
               },
             ];
 
-        const invoiceDataForPdf = {
-          ...invoice,
-          invoiceId: invoice.invoiceId || invoice.invoiceNumber || invoiceId,
-          items,
-        };
+      const invoiceDataForPdf = {
+        ...invoice,
+        invoiceId: invoice.invoiceId || invoice.invoiceNumber || invoiceId,
+        items,
+      };
 
-        invoiceDataForPdf.logoDataUri = await this._getInvoiceLogoDataUri();
+      invoiceDataForPdf.logoDataUri = await this._getInvoiceLogoDataUri();
 
-        const html = InvoiceImageGenerator.createInvoiceHTML(invoiceDataForPdf);
-        const { uri } = await Print.printToFileAsync({
-          html,
-          base64: false,
-          width: 612,
-          height: 792,
-        });
-        uriToShare = uri;
-      } catch (pdfError) {
-        // Fall back to any stored pdfUri if PDF regeneration fails.
-        uriToShare = invoice.pdfUri || null;
-      }
+      const html = InvoiceImageGenerator.createInvoiceHTML(invoiceDataForPdf);
+      const { uri } = await Print.printToFileAsync({
+        html,
+        base64: false,
+        width: 612,
+        height: 792,
+      });
+      uriToShare = uri;
 
       if (!uriToShare) {
         throw new Error('Invoice PDF is not available to share');

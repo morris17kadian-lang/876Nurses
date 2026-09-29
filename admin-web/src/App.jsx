@@ -29,14 +29,82 @@ import {
   ShieldAlert,
   ChevronRight
 } from 'lucide-react';
-import { db, isConfigured } from './firebase';
-import { collection, query, getDocs, onSnapshot, limit, orderBy } from 'firebase/firestore';
+import { auth, db, isConfigured } from './firebase';
+import { onAuthStateChanged, signInWithEmailAndPassword, signOut } from 'firebase/auth';
+import { collection, query, getDocs, onSnapshot, limit, where, doc, getDoc, updateDoc } from 'firebase/firestore';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [currentTime, setCurrentTime] = useState('');
   const [currentDate, setCurrentDate] = useState('');
+  const [authUser, setAuthUser] = useState(null);
+  const [adminName, setAdminName] = useState('Administrator');
+  const [authReady, setAuthReady] = useState(false);
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [notifications, setNotifications] = useState([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+
+  useEffect(() => {
+    if (!auth || !db || !isConfigured) {
+      setAuthReady(true);
+      return undefined;
+    }
+    return onAuthStateChanged(auth, async (currentUser) => {
+      if (!currentUser) {
+        setAuthUser(null);
+        setAuthReady(true);
+        return;
+      }
+      try {
+        const adminProfile = await getDoc(doc(db, 'admins', currentUser.uid));
+        const role = String(adminProfile.data()?.role || '').toLowerCase();
+        if (!adminProfile.exists() || !['admin', 'superadmin'].includes(role)) {
+          await signOut(auth);
+          setLoginError('This account does not have administrator access.');
+          setAuthUser(null);
+        } else {
+          setAuthUser(currentUser);
+          setAdminName(adminProfile.data()?.fullName || adminProfile.data()?.name || currentUser.email || 'Administrator');
+          setLoginError('');
+        }
+      } catch (error) {
+        setLoginError('Could not verify administrator access. Please try again.');
+        setAuthUser(null);
+      } finally {
+        setAuthReady(true);
+      }
+    });
+  }, []);
+
+  const handleAdminSignIn = async (event) => {
+    event.preventDefault();
+    setLoginError('');
+    try {
+      await signInWithEmailAndPassword(auth, loginEmail.trim(), loginPassword);
+    } catch (error) {
+      setLoginError('Sign-in failed. Check your email and password.');
+    }
+  };
+
+  const unreadNotifications = notifications.filter((notification) => !notification.read && !notification.isRead).length;
+
+  const markWebNotificationRead = async (notification) => {
+    setNotifications((current) => current.map((item) => item.id === notification.id
+      ? { ...item, read: true, isRead: true }
+      : item));
+    try {
+      await updateDoc(doc(db, 'notifications', notification.id), {
+        read: true,
+        isRead: true,
+        readAt: new Date(),
+      });
+    } catch (error) {
+      console.warn('Could not mark admin notification read:', error);
+    }
+  };
 
   // Live Firebase or Demo stats
   const [stats, setStats] = useState({
@@ -78,7 +146,7 @@ export default function App() {
 
   // Listen for real Firestore data if credentials exist
   useEffect(() => {
-    if (!isConfigured || !db) return;
+    if (!isConfigured || !db || !authUser) return;
 
     try {
       // Sync appointments
@@ -123,7 +191,30 @@ export default function App() {
     } catch (err) {
       console.warn('Firestore live sync error:', err);
     }
-  }, []);
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!authUser || !db) {
+      setNotifications([]);
+      return undefined;
+    }
+    const ownNotifications = query(
+      collection(db, 'notifications'),
+      where('userId', '==', authUser.uid),
+      limit(50),
+    );
+    return onSnapshot(ownNotifications, (snapshot) => {
+      const items = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
+      items.sort((a, b) => {
+        const time = (value) => value?.toDate ? value.toDate().getTime() : new Date(value || 0).getTime();
+        return time(b.createdAt || b.sentAt) - time(a.createdAt || a.sentAt);
+      });
+      setNotifications(items);
+    }, (error) => {
+      console.warn('Admin notification listener failed:', error);
+      setNotifications([]);
+    });
+  }, [authUser]);
 
   const navItems = [
     { id: 'Dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -144,6 +235,28 @@ export default function App() {
       a.service.toLowerCase().includes(searchQuery.toLowerCase()) ||
       a.nurse.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  if (!authReady) {
+    return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: '#475569' }}>Checking administrator session…</div>;
+  }
+
+  if (!authUser) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#F4F7FB', padding: 24 }}>
+        <form onSubmit={handleAdminSignIn} style={{ width: 'min(420px, 100%)', background: '#FFFFFF', borderRadius: 18, padding: 32, boxShadow: '0 18px 48px rgba(15, 23, 42, 0.12)' }}>
+          <div style={{ color: '#0A2B49', fontSize: 24, fontWeight: 800, marginBottom: 8 }}>876Nurses Admin</div>
+          <div style={{ color: '#64748B', marginBottom: 24 }}>Sign in with your administrator account.</div>
+          {!isConfigured && <div style={{ color: '#B91C1C', marginBottom: 16 }}>Firebase is not configured for this portal.</div>}
+          <label style={{ display: 'block', color: '#334155', fontSize: 13, fontWeight: 700, marginBottom: 7 }}>Email</label>
+          <input value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} type="email" autoComplete="username" required style={{ width: '100%', boxSizing: 'border-box', padding: '12px 14px', border: '1px solid #CBD5E1', borderRadius: 9, marginBottom: 16 }} />
+          <label style={{ display: 'block', color: '#334155', fontSize: 13, fontWeight: 700, marginBottom: 7 }}>Password</label>
+          <input value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} type="password" autoComplete="current-password" required style={{ width: '100%', boxSizing: 'border-box', padding: '12px 14px', border: '1px solid #CBD5E1', borderRadius: 9, marginBottom: 16 }} />
+          {loginError && <div role="alert" style={{ color: '#B91C1C', fontSize: 13, marginBottom: 14 }}>{loginError}</div>}
+          <button type="submit" disabled={!isConfigured} style={{ width: '100%', border: 0, borderRadius: 9, padding: '13px 16px', color: '#FFFFFF', fontWeight: 700, background: isConfigured ? '#1687C9' : '#94A3B8', cursor: isConfigured ? 'pointer' : 'not-allowed' }}>Sign in</button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', backgroundColor: '#F4F7FB' }}>
@@ -293,44 +406,46 @@ export default function App() {
           {/* Right Header: Notification + Admin Profile */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>
             {/* Notifications */}
-            <div style={{ position: 'relative', cursor: 'pointer' }}>
-              <div
-                style={{
-                  width: '38px',
-                  height: '38px',
-                  borderRadius: '50%',
-                  backgroundColor: '#F1F5F9',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                aria-label={`Notifications${unreadNotifications ? `, ${unreadNotifications} unread` : ''}`}
+                aria-expanded={notificationsOpen}
+                onClick={() => setNotificationsOpen((open) => !open)}
+                style={{ width: 38, height: 38, border: 0, borderRadius: '50%', backgroundColor: '#F1F5F9', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
               >
                 <Bell size={19} color="#475569" />
-              </div>
-              <span
-                style={{
-                  position: 'absolute',
-                  top: '-2px',
-                  right: '-2px',
-                  backgroundColor: '#EF4444',
-                  color: '#FFFFFF',
-                  fontSize: '10px',
-                  fontWeight: '800',
-                  borderRadius: '10px',
-                  width: '18px',
-                  height: '18px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  border: '2px solid #FFFFFF',
-                }}
-              >
-                3
-              </span>
+              </button>
+              {unreadNotifications > 0 && (
+                <span style={{ position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, padding: '0 4px', boxSizing: 'border-box', backgroundColor: '#EF4444', color: '#FFFFFF', fontSize: 10, fontWeight: 800, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #FFFFFF', pointerEvents: 'none' }}>
+                  {unreadNotifications > 99 ? '99+' : unreadNotifications}
+                </span>
+              )}
+              {notificationsOpen && (
+                <div style={{ position: 'absolute', top: 48, right: 0, width: 360, maxHeight: 440, overflowY: 'auto', background: '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: 12, boxShadow: '0 18px 45px rgba(15,23,42,0.18)', zIndex: 30 }}>
+                  <div style={{ padding: '14px 16px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong style={{ color: '#1E293B' }}>Notifications</strong>
+                    <span style={{ color: '#64748B', fontSize: 12 }}>{unreadNotifications} unread</span>
+                  </div>
+                  {notifications.length === 0 ? (
+                    <div style={{ padding: 24, textAlign: 'center', color: '#64748B', fontSize: 13 }}>You’re all caught up.</div>
+                  ) : notifications.map((notification) => (
+                    <button
+                      key={notification.id}
+                      type="button"
+                      onClick={() => markWebNotificationRead(notification)}
+                      style={{ display: 'block', width: '100%', textAlign: 'left', border: 0, borderBottom: '1px solid #F1F5F9', padding: '13px 16px', cursor: 'pointer', background: notification.read || notification.isRead ? '#FFFFFF' : '#F0F9FF' }}
+                    >
+                      <span style={{ display: 'block', color: '#1E293B', fontSize: 13, fontWeight: 700, marginBottom: 4 }}>{notification.title || 'Notification'}</span>
+                      <span style={{ display: 'block', color: '#475569', fontSize: 12, lineHeight: 1.45 }}>{notification.message || notification.body || ''}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Admin User Profile */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div
                 style={{
                   width: '42px',
@@ -346,13 +461,13 @@ export default function App() {
                   boxShadow: '0 2px 8px rgba(10,43,73,0.15)',
                 }}
               >
-                KM
+                {adminName.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase()}
               </div>
               <div>
-                <div style={{ fontSize: '14px', fontWeight: '700', color: '#0F172A', lineHeight: 1.2 }}>Kadian Morris</div>
+                <div style={{ fontSize: '14px', fontWeight: '700', color: '#0F172A', lineHeight: 1.2 }}>{adminName}</div>
                 <div style={{ fontSize: '11.5px', color: '#64748B', fontWeight: '500' }}>Administrator</div>
               </div>
-              <ChevronDown size={16} color="#94A3B8" />
+              <button type="button" onClick={() => signOut(auth)} style={{ border: '1px solid #E2E8F0', borderRadius: 8, background: '#FFFFFF', color: '#475569', padding: '7px 10px', cursor: 'pointer' }}>Sign out</button>
             </div>
           </div>
         </header>

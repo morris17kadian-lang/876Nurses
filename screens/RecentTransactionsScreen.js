@@ -24,6 +24,7 @@ import TouchableWeb from '../components/TouchableWeb';
 import ApiService from '../services/ApiService';
 import PayslipGenerator from '../services/PayslipGenerator';
 import PayslipComponent from '../components/PayslipComponent';
+import SharedSettingsService from '../services/SharedSettingsService';
 
 const getEmptyReviewForm = () => ({
   status: 'pending',
@@ -32,7 +33,7 @@ const getEmptyReviewForm = () => ({
   basePay: '',
   manualAdjustment: '0',
   allowances: { transport: '0', meal: '0', phone: '0', other: '0' },
-  deductions: { tax: '0', nis: '0', other: '0' },
+  deductions: {},
   notes: '',
 });
 
@@ -90,6 +91,46 @@ const formatDisplayDate = (value) => {
 const sumObjectValues = (object = {}) => {
   return Object.values(object || {}).reduce((sum, value) => sum + sanitizeNumber(value), 0);
 };
+
+const parseWorkedHours = (record) => {
+  const directHours = sanitizeNumber(record?.hoursWorked ?? record?.totalHours ?? record?.workedHours);
+  if (directHours > 0) return directHours;
+
+  const clockIn = record?.actualStartTime || record?.clockInTime || record?.startTime;
+  const clockOut = record?.actualEndTime || record?.clockOutTime || record?.endTime;
+  if (clockIn && clockOut) {
+    const elapsed = new Date(clockOut).getTime() - new Date(clockIn).getTime();
+    if (Number.isFinite(elapsed) && elapsed > 0) return elapsed / 3600000;
+  }
+
+  const duration = record?.duration ?? record?.estimatedDuration;
+  if (typeof duration === 'number' && duration > 0) return duration / 60;
+  if (typeof duration === 'string') {
+    const match = duration.match(/([\d.]+)\s*(hours?|hrs?|minutes?|mins?)?/i);
+    if (match) {
+      const amount = Number(match[1]);
+      return /min/i.test(match[2] || '') ? amount / 60 : amount;
+    }
+  }
+  return 0;
+};
+
+const toPayrollDateKey = (value) => {
+  if (!value) return '';
+  const text = String(value);
+  const isoMatch = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) return isoMatch[1];
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const getRecordId = (value) => String(typeof value === 'object'
+  ? (value.id || value._id || value.uid || '')
+  : (value || ''));
 
 const FILTER_OPTIONS = [
   { key: 'available', label: 'Available' },
@@ -173,7 +214,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null);
   const [payslipToPay, setPayslipToPay] = useState(null);
   const { appointments } = useAppointments();
-  const { shifts } = useShifts();
+  const { shiftRequests = [] } = useShifts();
   const [paymentForm, setPaymentForm] = useState({
     staffName: '',
     amount: '',
@@ -283,28 +324,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
           ]);
         }
 
-        // Load admin payroll settings
-        let payrollSettings = null;
-        
-        // Try to fetch from backend first to ensure sync
-        try {
-          const response = await ApiService.makeRequest('/payments/settings', { method: 'GET' });
-          if (response.success && response.data && response.data.adminPayrollSettings) {
-            payrollSettings = response.data.adminPayrollSettings;
-            // Update local storage to keep it in sync
-            await AsyncStorage.setItem('adminPayrollSettings', JSON.stringify(payrollSettings));
-          }
-        } catch (err) {
-          // Failed to fetch settings from backend, using local storage
-        }
-
-        // Fallback to local storage if backend fetch failed or returned no settings
-        if (!payrollSettings) {
-          const storedSettings = await AsyncStorage.getItem('adminPayrollSettings');
-          if (storedSettings) {
-            payrollSettings = JSON.parse(storedSettings);
-          }
-        }
+        const payrollSettings = await SharedSettingsService.read('payroll');
 
         if (payrollSettings) {
           setAdminPayrollSettings(payrollSettings);
@@ -320,17 +340,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
               twelveHours: 7000
             },
             holidayMultiplier: 2,
-            taxEnabled: true,
-            allowances: {
-              transport: '15000',
-              meal: '8000',
-              phone: '5000'
-            },
-            deductions: {
-              tax: '25',
-              nis: '3',
-              education: '2'
-            }
+            allowances: { transport: '0', meal: '0', phone: '0' },
           });
         }
       } catch (error) {
@@ -344,9 +354,8 @@ const RecentTransactionsScreen = ({ navigation }) => {
   React.useEffect(() => {
     const loadCompanyDetails = async () => {
       try {
-        const stored = await AsyncStorage.getItem('companyDetails');
-        if (stored) {
-          const parsed = JSON.parse(stored);
+        const parsed = await SharedSettingsService.read('company');
+        if (parsed) {
           setCompanyDetails((prev) => ({ ...prev, ...parsed }));
         }
       } catch (error) {
@@ -364,29 +373,23 @@ const RecentTransactionsScreen = ({ navigation }) => {
       return [];
     }
     
-    const nursingStaff = nurses && nurses.length > 0 
-      ? nurses.map(nurse => ({
+    const nursingStaff = (nurses || []).map(nurse => ({
           id: nurse.id,
           name: nurse.name,
           role: nurse.specialization || nurse.title || 'Nurse',
-          hourlyRate: nurse.hourlyRate || 25.00,
+          hourlyRate: nurse.hourlyRate || adminPayrollSettings?.defaultHourlyRate || 0,
           employeeId: nurse.code || nurse.id,
           code: nurse.code,
           staffType: 'nursing',
           payType: 'hourly'
-        }))
-      : [
-          { id: 'nurse-001', name: 'Sarah Johnson, RN', role: 'Registered Nurse', hourlyRate: 28.50, employeeId: 'NURSE001', code: 'NURSE001', staffType: 'nursing', payType: 'hourly' },
-          { id: 'nurse-002', name: 'Michael Chen, RN', role: 'Registered Nurse', hourlyRate: 32.00, employeeId: 'NURSE002', code: 'NURSE002', staffType: 'nursing', payType: 'hourly' },
-          { id: 'nurse-003', name: 'Emily Rodriguez, LPN', role: 'Licensed Practical Nurse', hourlyRate: 30.50, employeeId: 'NURSE003', code: 'NURSE003', staffType: 'nursing', payType: 'hourly' },
-        ];
+        }));
 
     const administrativeStaff = adminStaff.map(admin => ({
       id: admin.id,
       name: admin.username || `${admin.firstName || ''} ${admin.lastName || ''}`.trim(),
       role: admin.title || 'Administrator',
       salary: admin.salary || (adminPayrollSettings?.defaultSalaryAmount || 180000),
-      hourlyRate: admin.hourlyRate || (adminPayrollSettings?.defaultHourlyRate || 2500),
+      hourlyRate: admin.hourlyRate || (adminPayrollSettings?.defaultHourlyRate || 0),
       employeeId: admin.code || admin.id,
       code: admin.code,
       staffType: 'admin',
@@ -478,53 +481,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
   const companyPhoneDisplay = companyDetails.phone || '(000) 000-0000';
   const companyCityDisplay = companyDetails.city || 'City, ST, ZIP';
 
-  const samplePayslipData = React.useMemo(() => {
-    const today = new Date();
-    const formattedToday = today.toISOString().split('T')[0];
-    const getLastTuesdayStart = (baseDate = new Date()) => {
-      const d = new Date(baseDate);
-      d.setHours(0, 0, 0, 0);
-      const diff = (d.getDay() - 2 + 7) % 7; // 2 = Tuesday
-      d.setDate(d.getDate() - diff);
-      return d;
-    };
-    const payRunDate = getLastTuesdayStart(today);
-    const periodEnd = new Date(payRunDate);
-    periodEnd.setDate(periodEnd.getDate() - 1); // Monday
-    const periodStart = new Date(payRunDate);
-    periodStart.setDate(periodStart.getDate() - 7); // previous Tuesday
-
-    return {
-      id: 'sample-payslip',
-      staffId: 'sample-nurse',
-      employeeId: 'NUR-001',
-      staffName: 'Sample Nurse',
-      role: 'Registered Nurse',
-      staffType: 'nursing',
-      payType: 'hourly',
-      periodStart: periodStart.toISOString().split('T')[0],
-      periodEnd: periodEnd.toISOString().split('T')[0],
-      generatedDate: payRunDate.toISOString().split('T')[0],
-      payDate: payRunDate.toISOString().split('T')[0],
-      hourlyRate: 2500,
-      regularHours: 38,
-      overtimeHours: 0, // Overtime only applies to holiday shifts
-      shiftHours: 0,
-      regularPay: (38 * 2500).toFixed(2),
-      overtimePay: 0, // No regular overtime in Jamaica
-      grossPay: (38 * 2500).toFixed(2),
-      netPay: (38 * 2500 - 12000).toFixed(2),
-      allowances: { transport: 15000, meal: 8000, phone: 5000 },
-      deductions: { tax: 10000, nis: 2000 },
-      status: 'pending',
-    };
-  }, []);
-
-  const handleSamplePayslipView = React.useCallback(() => {
-    setSelectedPayslip(samplePayslipData);
-  }, [samplePayslipData]);
-
-  // Calculate actual hours from approved appointments and shifts
+  // Calculate worked hours from completed records; never synthesize payroll hours.
   const calculateStaffHours = (staffId, periodStart, periodEnd) => {
     // Return zero hours if data cleared
     if (transactionsCleared) {
@@ -539,36 +496,19 @@ const RecentTransactionsScreen = ({ navigation }) => {
       };
     }
     
-    const start = new Date(periodStart);
-    const end = new Date(periodEnd);
-    
     // Get approved appointments for this staff member in the pay period
-    const staffAppointments = appointments?.filter(appointment => 
-      (appointment.nurseId === staffId || appointment.assignedNurse === staffId) &&
-      appointment.status === 'completed' &&
-      new Date(appointment.date) >= start &&
-      new Date(appointment.date) <= end
-    ) || [];
+    const startKey = periodStart;
+    const endKey = periodEnd;
+    const staffAppointments = appointments?.filter(appointment => {
+      const appointmentDate = toPayrollDateKey(appointment.date || appointment.completedAt);
+      const assignedId = appointment.nurseId || appointment.assignedNurseId || appointment.assignedNurse || appointment.staffId;
+      return getRecordId(assignedId) === String(staffId) && appointment.status === 'completed'
+        && appointmentDate >= startKey && appointmentDate <= endKey;
+    }) || [];
 
-    // Get shifts for this staff member in the pay period (if shifts context exists)
-    const staffShifts = shifts?.filter(shift => 
-      shift.staffId === staffId &&
-      shift.status === 'completed' &&
-      new Date(shift.date) >= start &&
-      new Date(shift.date) <= end
-    ) || [];
-
-    // Calculate hours from appointments
-    const appointmentHours = staffAppointments.reduce((total, appointment) => {
-      // Extract duration from appointment (could be in minutes, convert to hours)
-      const duration = appointment.duration || appointment.estimatedDuration || 60; // default 1 hour
-      const hours = typeof duration === 'string' && duration.includes('min') 
-        ? parseInt(duration) / 60 
-        : typeof duration === 'number' 
-        ? duration / 60 
-        : 1; // fallback to 1 hour
-      return total + hours;
-    }, 0);
+    const shiftAppointments = staffAppointments.filter((appointment) => appointment.isFromShift || appointment.shiftId || appointment.shiftRequestId);
+    const ordinaryAppointments = staffAppointments.filter((appointment) => !shiftAppointments.includes(appointment));
+    const appointmentHours = ordinaryAppointments.reduce((total, appointment) => total + parseWorkedHours(appointment), 0);
 
     const shiftBreakdown = {
       eightHourShifts: 0,
@@ -577,27 +517,30 @@ const RecentTransactionsScreen = ({ navigation }) => {
       holidayTwelveHourShifts: 0,
     };
 
-    // Calculate hours from shifts
-    const shiftHours = staffShifts.reduce((total, shift) => {
-      let hours = 0;
-      if (shift.startTime && shift.endTime) {
-        const startTime = new Date(`${shift.date} ${shift.startTime}`);
-        const endTime = new Date(`${shift.date} ${shift.endTime}`);
-        hours = (endTime - startTime) / (1000 * 60 * 60); // Convert milliseconds to hours
-      } else {
-        hours = shift.duration || shift.hours || shift.length || 8; // fallback to 8 hour shift
+    const completedShiftIds = new Set();
+    const completedShifts = shiftAppointments.map((appointment) => ({
+      ...appointment,
+      id: appointment.shiftId || appointment.shiftRequestId || appointment.id,
+      date: toPayrollDateKey(appointment.date || appointment.completedAt),
+    }));
+    (shiftRequests || []).forEach((shift) => {
+      const shiftDate = toPayrollDateKey(shift.completedAt || shift.date || shift.scheduledDate || shift.appointmentDate);
+      const shiftStaffId = shift.nurseId || shift.staffId || shift.assignedNurseId;
+      const shiftId = getRecordId(shift.id || shift._id);
+      if (shift.status === 'completed' && getRecordId(shiftStaffId) === String(staffId)
+        && shiftDate >= startKey && shiftDate <= endKey
+        && !completedShifts.some((appointment) => String(appointment.id) === shiftId)) {
+        completedShifts.push({ ...shift, id: shiftId, date: shiftDate });
       }
+    });
 
+    const shiftHours = completedShifts.reduce((total, shift) => {
+      const hours = parseWorkedHours(shift);
+      if (hours <= 0) return total;
+      completedShiftIds.add(String(shift.id));
       const normalizedHours = hours >= 10 ? 12 : 8;
-      
-      // Auto-detect if shift falls on a Jamaican public holiday
-      const shiftDate = shift.date || shift.scheduledDate || shift.appointmentDate;
-      const isHoliday = isJamaicanHoliday(shiftDate) || Boolean(
-        shift.isHoliday ||
-        shift.holiday ||
-        shift.isHolidayShift ||
-        shift.holidayPay
-      );
+      const shiftDate = shift.date;
+      const isHoliday = isJamaicanHoliday(shiftDate) || Boolean(shift.isHoliday || shift.holiday || shift.isHolidayShift || shift.holidayPay);
 
       if (normalizedHours === 12) {
         shiftBreakdown.twelveHourShifts += 1;
@@ -607,40 +550,21 @@ const RecentTransactionsScreen = ({ navigation }) => {
         if (isHoliday) shiftBreakdown.holidayEightHourShifts += 1;
       }
 
-      return total + Math.max(0, hours); // Ensure positive hours
+      return total + hours;
     }, 0);
 
     const totalHours = appointmentHours + shiftHours;
-    
-    // If no real data, use realistic mock data based on staff role
-    const mockHoursRange = {
-      'Senior Nurse': [37, 41],
-      'Physical Therapist': [35, 39],
-      'Wound Care Specialist': [34, 38],
-      'Home Care Nurse': [36, 40],
-      'Health Monitor': [32, 38],
-      'Medication Specialist': [35, 39]
-    };
-    
-    const staff = staffMembers.find(s => s.id === staffId);
-    const range = mockHoursRange[staff?.role] || [70, 80];
-    const fallbackHours = totalHours > 0 ? totalHours : range[0] + Math.random() * (range[1] - range[0]);
-    
-    const finalTotalHours = totalHours > 0 ? totalHours : fallbackHours;
-    
-    // NOTE: Overtime is ONLY paid for holiday shifts (at 2x rate)
-    // Regular overtime (hours over 35) is NOT paid as overtime in Jamaica
-    const regularHours = finalTotalHours;
-    const overtimeHours = 0; // No overtime for regular hours
+    const regularHours = totalHours;
+    const overtimeHours = 0;
 
     return {
-      totalHours: parseFloat(finalTotalHours.toFixed(1)),
+      totalHours: parseFloat(totalHours.toFixed(2)),
       regularHours: parseFloat(regularHours.toFixed(1)),
       overtimeHours: parseFloat(overtimeHours.toFixed(1)),
       appointmentHours: parseFloat(appointmentHours.toFixed(1)),
       shiftHours: parseFloat(shiftHours.toFixed(1)),
       sessionsCompleted: staffAppointments.length,
-      shiftsCompleted: staffShifts.length,
+      shiftsCompleted: completedShiftIds.size,
       shiftBreakdown,
     };
   };
@@ -699,37 +623,25 @@ const RecentTransactionsScreen = ({ navigation }) => {
     let hoursWorked = 0;
 
     if (staff.payType === 'salary') {
-      // Calculate prorated salary for the period
-      const daysInPeriod = Math.ceil((periodEnd - periodStart) / (1000 * 60 * 60 * 24)) + 1;
-      const daysInMonth = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0).getDate();
-      basePay = (parseFloat(staff.salary) * daysInPeriod) / daysInMonth;
+      // Prorate each portion of the pay period against its own calendar month.
+      const monthlySalary = sanitizeNumber(staff.salary);
+      for (let cursor = new Date(periodStart); cursor <= periodEnd; cursor.setDate(cursor.getDate() + 1)) {
+        const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+        basePay += monthlySalary / daysInMonth;
+      }
     } else if (staff.payType === 'hourly') {
-      // For admin hourly staff, assume standard 8 hours/day for 7 days = 56 hours
-      hoursWorked = 56;
-      basePay = hoursWorked * parseFloat(staff.hourlyRate);
+      // Hourly admin staff need a recorded timesheet; no hours are fabricated here.
+      return null;
     }
 
-    // Calculate allowances
-    const allowances = {
-      transport: parseFloat(adminPayrollSettings.allowances.transport || 0),
-      meal: parseFloat(adminPayrollSettings.allowances.meal || 0),
-      phone: parseFloat(adminPayrollSettings.allowances.phone || 0)
-    };
-    
-    const totalAllowances = Object.values(allowances).reduce((sum, amount) => sum + amount, 0);
-    const grossPay = basePay + totalAllowances;
+    const allowances = {};
+    const totalAllowances = 0;
+    const grossPay = basePay;
 
     // Calculate deductions
-    const deductions = {
-      tax: adminPayrollSettings.taxEnabled ? grossPay * (parseFloat(adminPayrollSettings.deductions.tax) / 100) : 0,
-      nis: adminPayrollSettings.taxEnabled ? grossPay * (parseFloat(adminPayrollSettings.deductions.nis) / 100) : 0,
-      education: adminPayrollSettings.taxEnabled ? grossPay * (parseFloat(adminPayrollSettings.deductions.education) / 100) : 0,
-      healthInsurance: adminPayrollSettings.healthInsurance ? 5000 : 0,
-      pension: adminPayrollSettings.pensionContribution ? grossPay * 0.05 : 0
-    };
-    
-    const totalDeductions = Object.values(deductions).reduce((sum, amount) => sum + amount, 0);
-    const netPay = grossPay - totalDeductions;
+    const deductions = {};
+    const totalDeductions = 0;
+    const netPay = grossPay;
 
     return {
       id: `${staff.id}-admin-${Date.now()}`,
@@ -782,22 +694,34 @@ const RecentTransactionsScreen = ({ navigation }) => {
       adminPeriodStart.setDate(adminPeriodStart.getDate() - 13);
 
       const newPayslips = [];
+      const skippedWithoutHours = [];
+      const storedPayslipsJson = await AsyncStorage.getItem('generatedPayslips');
+      const existingPayslips = storedPayslipsJson ? JSON.parse(storedPayslipsJson) : [];
+      const periodAlreadyExists = (staffId, start, end) => existingPayslips.some((payslip) =>
+        String(payslip.staffId) === String(staffId)
+        && payslip.periodStart === start && payslip.periodEnd === end
+      );
 
       for (const staff of selectedStaff) {
         if (staff.staffType === 'admin') {
           const periodStart = adminPeriodStart.toISOString().split('T')[0];
           const periodEnd = adminPeriodEnd.toISOString().split('T')[0];
+          if (periodAlreadyExists(staff.id, periodStart, periodEnd)) continue;
           const adminPayslip = generateAdminPayslip(staff, {
             start: periodStart,
             end: periodEnd,
           });
           if (adminPayslip) {
             newPayslips.push(adminPayslip);
+          } else {
+            skippedWithoutHours.push(staff.name);
           }
         } else {
           const periodStart = nursePeriodStart.toISOString().split('T')[0];
           const periodEnd = nursePeriodEnd.toISOString().split('T')[0];
           const payDate = nursePayRunDate.toISOString().split('T')[0];
+
+          if (periodAlreadyExists(staff.id, periodStart, periodEnd)) continue;
 
           // Generate nursing payslip using shift-based payroll rules
           const hoursData = calculateStaffHours(
@@ -806,9 +730,14 @@ const RecentTransactionsScreen = ({ navigation }) => {
             periodEnd
           );
 
+          if (hoursData.totalHours <= 0) {
+            skippedWithoutHours.push(staff.name);
+            continue;
+          }
+
           const shiftRates = adminPayrollSettings?.shiftRates || { eightHours: 5000, twelveHours: 7000 };
           const holidayMultiplier = parseFloat(adminPayrollSettings?.holidayMultiplier) || 2;
-          const hourlyRate = parseFloat(adminPayrollSettings?.defaultHourlyRate || staff.hourlyRate || 0);
+          const hourlyRate = sanitizeNumber(adminPayrollSettings?.defaultHourlyRate);
           const breakdown = hoursData.shiftBreakdown || {};
 
           const baseShiftPay =
@@ -826,6 +755,10 @@ const RecentTransactionsScreen = ({ navigation }) => {
           const regularPay = baseShiftPay + appointmentPay + holidayExtra;
           const overtimePay = 0; // Overtime is only for holidays, already included in holidayExtra
           const grossPay = regularPay + overtimePay;
+          const allowances = {};
+          const totalAllowances = 0;
+          const deductions = {};
+          const totalDeductions = 0;
           const netPay = grossPay;
           
           newPayslips.push({
@@ -844,6 +777,16 @@ const RecentTransactionsScreen = ({ navigation }) => {
             overtimeHours: hoursData.overtimeHours,
             regularPay: regularPay.toFixed(2),
             overtimePay: overtimePay.toFixed(2),
+            shiftPay: baseShiftPay.toFixed(2),
+            appointmentPay: appointmentPay.toFixed(2),
+            holidayPremium: holidayExtra.toFixed(2),
+            shiftBreakdown: breakdown,
+            appointmentHours: hoursData.appointmentHours,
+            shiftHours: hoursData.shiftHours,
+            allowances,
+            totalAllowances: totalAllowances.toFixed(2),
+            deductions,
+            totalDeductions: totalDeductions.toFixed(2),
             grossPay: grossPay.toFixed(2),
             netPay: netPay.toFixed(2),
             status: 'pending',
@@ -869,15 +812,21 @@ const RecentTransactionsScreen = ({ navigation }) => {
       }
 
       // Save to AsyncStorage as cache
-      const existingPayslips = await AsyncStorage.getItem('generatedPayslips');
-      const allPayslips = existingPayslips ? JSON.parse(existingPayslips) : [];
-      allPayslips.push(...savedPayslips);
+      const allPayslips = [...existingPayslips, ...savedPayslips];
       await AsyncStorage.setItem('generatedPayslips', JSON.stringify(allPayslips));
 
       // Update local state to show new payslips immediately
       setGeneratedPayslips(allPayslips);
 
-      Alert.alert('Success', `Generated ${newPayslips.length} payslips successfully!`);
+      const skippedMessage = skippedWithoutHours.length
+        ? ` Skipped ${skippedWithoutHours.length} staff without recorded work hours or timesheets.`
+        : '';
+      Alert.alert(
+        newPayslips.length ? 'Success' : 'No payslips generated',
+        newPayslips.length
+          ? `Generated ${newPayslips.length} payslips successfully.${skippedMessage}`
+          : `No new payslips were created. The period may already have a payslip, or staff may have no recorded work hours. ${skippedMessage}`
+      );
       setGeneratePayslipModalVisible(false);
       setSelectedStaff([]);
 
@@ -887,105 +836,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
     }
   };
 
-  // Mock payslip data - Generated weekly (Tue–Mon) for staff using actual appointment/shift hours
-  const generateWeeklyPayslips = () => {
-    // Return empty array if data cleared
-    if (transactionsCleared || staffMembers.length === 0) {
-      return [];
-    }
-    
-    const currentDate = new Date();
-    const payslips = [];
-    
-    const getLastTuesdayStart = (baseDate = new Date()) => {
-      const d = new Date(baseDate);
-      d.setHours(0, 0, 0, 0);
-      const diff = (d.getDay() - 2 + 7) % 7; // 2 = Tuesday
-      d.setDate(d.getDate() - diff);
-      return d;
-    };
-
-    const lastTuesday = getLastTuesdayStart(currentDate);
-
-    // Generate payslips for last 3 weekly pay runs
-    for (let i = 0; i < 3; i++) {
-      const payRunDate = new Date(lastTuesday);
-      payRunDate.setDate(payRunDate.getDate() - (i * 7));
-
-      const periodEnd = new Date(payRunDate);
-      periodEnd.setDate(periodEnd.getDate() - 1); // Monday
-
-      const periodStart = new Date(payRunDate);
-      periodStart.setDate(periodStart.getDate() - 7); // previous Tuesday
-      
-      staffMembers.forEach((staff, index) => {
-        // Calculate actual hours from appointments and shifts
-        const hoursData = calculateStaffHours(
-          staff.id, 
-          periodStart.toISOString().split('T')[0], 
-          periodEnd.toISOString().split('T')[0]
-        );
-        
-        const shiftRates = adminPayrollSettings?.shiftRates || { eightHours: 5000, twelveHours: 7000 };
-        const holidayMultiplier = parseFloat(adminPayrollSettings?.holidayMultiplier) || 2;
-        const hourlyRate = parseFloat(adminPayrollSettings?.defaultHourlyRate || staff.hourlyRate || 1500);
-        const breakdown = hoursData.shiftBreakdown || {};
-
-        const baseShiftPay =
-          (breakdown.eightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) +
-          (breakdown.twelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0);
-
-        const holidayExtra =
-          (breakdown.holidayEightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) * (holidayMultiplier - 1) +
-          (breakdown.holidayTwelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0) * (holidayMultiplier - 1);
-
-        const appointmentPay = (hoursData.appointmentHours || 0) * hourlyRate;
-
-        // If no shifts were worked, calculate pay based on total hours at hourly rate
-        const hasShifts = (breakdown.eightHourShifts || 0) + (breakdown.twelveHourShifts || 0) > 0;
-        const baseHourlyPay = !hasShifts && hoursData.regularHours > 0 
-          ? hoursData.regularHours * hourlyRate 
-          : 0;
-
-        const regularPay = baseShiftPay + appointmentPay + holidayExtra + baseHourlyPay;
-        const overtimePay = hoursData.overtimeHours > 0 ? hoursData.overtimeHours * hourlyRate * 1.5 : 0;
-        const grossPay = regularPay + overtimePay;
-        
-        // No deductions - gross pay equals net pay
-        const netPay = grossPay;
-        
-        payslips.push({
-          id: `${staff.id}-${i}`,
-          staffId: staff.id,
-          employeeId: staff.employeeId,
-          staffName: staff.name,
-          role: staff.role,
-          periodStart: periodStart.toISOString().split('T')[0],
-          periodEnd: periodEnd.toISOString().split('T')[0],
-          hourlyRate: hourlyRate,
-          hoursWorked: hoursData.totalHours,
-          regularHours: hoursData.regularHours,
-          overtimeHours: hoursData.overtimeHours,
-          appointmentHours: hoursData.appointmentHours,
-          shiftHours: hoursData.shiftHours,
-          sessionsCompleted: hoursData.sessionsCompleted,
-          shiftsCompleted: hoursData.shiftsCompleted,
-          regularPay: regularPay.toFixed(2),
-          overtimePay: overtimePay.toFixed(2),
-          grossPay: grossPay.toFixed(2),
-          netPay: netPay.toFixed(2),
-          status: i === 0 ? 'pending' : 'paid',
-          paymentMethod: 'Bank Transfer',
-          generatedDate: periodEnd.toISOString().split('T')[0],
-          payDate: i === 0 ? null : new Date(periodEnd.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-        });
-      });
-    }
-    
-    return payslips.sort((a, b) => new Date(b.periodEnd) - new Date(a.periodEnd));
-  };
-
-  // Load generated payslips from AsyncStorage and combine with mock nursing payslips
+  // Load persisted payslips. The screen does not invent historical or paid records.
   const [generatedPayslips, setGeneratedPayslips] = React.useState([]);
   
   React.useEffect(() => {
@@ -1020,10 +871,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
   }, [transactionsCleared]);
 
   const payslips = React.useMemo(() => {
-    const nursingPayslips = generateWeeklyPayslips();
-    // De-dupe by id and let persisted/generated payslips override mock/generated-weekly ones.
     const byId = new Map();
-    nursingPayslips.forEach((p) => byId.set(p.id, p));
     generatedPayslips.forEach((p) => byId.set(p.id, p));
     return Array.from(byId.values()).sort(
       (a, b) => new Date(b.periodEnd || b.generatedDate) - new Date(a.periodEnd || a.generatedDate)
@@ -1169,25 +1017,23 @@ const RecentTransactionsScreen = ({ navigation }) => {
     const issues = [];
 
     sortedPayslips.forEach((payslip) => {
-      const allowancesFallback =
-        payslip.staffType === 'admin' && adminPayrollSettings?.allowances
-          ? sumObjectValues(adminPayrollSettings.allowances)
-          : 0;
-
       const allowancesTotal =
         sumObjectValues(payslip.allowances) ||
-        sanitizeNumber(payslip.totalAllowances) ||
-        allowancesFallback;
+        sanitizeNumber(payslip.totalAllowances);
 
       const manualAdjustment = sanitizeNumber(payslip.manualAdjustment);
       const hourlyRate = sanitizeNumber(payslip.hourlyRate);
       const regularHours = sanitizeNumber(payslip.regularHours);
       const overtimeHours = sanitizeNumber(payslip.overtimeHours);
-      const deductionsTotal =
-        sumObjectValues(payslip.deductions) || sanitizeNumber(payslip.totalDeductions);
+      const deductionsTotal = 0;
 
       let expectedGross = sanitizeNumber(payslip.grossPay);
-      if (payslip.staffType === 'nursing' || payslip.payType === 'hourly') {
+      if (payslip.staffType === 'nursing' && payslip.shiftPay !== undefined) {
+        expectedGross = sanitizeNumber(payslip.shiftPay)
+          + sanitizeNumber(payslip.appointmentPay)
+          + sanitizeNumber(payslip.holidayPremium)
+          + allowancesTotal + manualAdjustment;
+      } else if ((payslip.staffType === 'nursing' || payslip.payType === 'hourly') && !payslip.shiftPay) {
         const regularPay = regularHours * hourlyRate;
         const overtimePay = overtimeHours * hourlyRate * 1.5;
         expectedGross = regularPay + overtimePay + allowancesTotal + manualAdjustment;
@@ -1402,16 +1248,12 @@ const RecentTransactionsScreen = ({ navigation }) => {
       basePay: payslip.basePay !== undefined ? String(payslip.basePay) : String(payslip.grossPay || ''),
       manualAdjustment: payslip.manualAdjustment !== undefined ? String(payslip.manualAdjustment) : '0',
       allowances: {
-        transport: String(payslip.allowances?.transport ?? adminPayrollSettings?.allowances?.transport ?? 0),
-        meal: String(payslip.allowances?.meal ?? adminPayrollSettings?.allowances?.meal ?? 0),
-        phone: String(payslip.allowances?.phone ?? adminPayrollSettings?.allowances?.phone ?? 0),
+        transport: String(payslip.allowances?.transport ?? 0),
+        meal: String(payslip.allowances?.meal ?? 0),
+        phone: String(payslip.allowances?.phone ?? 0),
         other: String(payslip.allowances?.other ?? 0),
       },
-      deductions: {
-        tax: String(payslip.deductions?.tax ?? 0),
-        nis: String(payslip.deductions?.nis ?? 0),
-        other: String(payslip.deductions?.other ?? 0),
-      },
+      deductions: {},
       notes: payslip.notes || '',
     });
     setReviewModalVisible(true);
@@ -1437,24 +1279,26 @@ const RecentTransactionsScreen = ({ navigation }) => {
       other: sanitizeNumber(form.allowances?.other),
     };
 
-    const deductions = {
-      tax: sanitizeNumber(form.deductions?.tax),
-      nis: sanitizeNumber(form.deductions?.nis),
-      other: sanitizeNumber(form.deductions?.other),
-    };
+    const deductions = {};
 
     let regularPay = basePayInput;
     let overtimePay = 0;
 
-    if (isHourly) {
+    if (payslip.staffType === 'nursing' && payslip.shiftPay !== undefined) {
+      const shiftHours = sanitizeNumber(payslip.shiftHours);
+      const appointmentHours = Math.max(0, regularHours - shiftHours);
+      regularPay = sanitizeNumber(payslip.shiftPay)
+        + appointmentHours * hourlyRate
+        + sanitizeNumber(payslip.holidayPremium);
+    } else if (isHourly) {
       regularPay = regularHours * hourlyRate;
       overtimePay = overtimeHours * hourlyRate * 1.5;
     }
 
     const totalAllowances = sumObjectValues(allowances);
-    const totalDeductions = sumObjectValues(deductions);
+    const totalDeductions = 0;
     const grossPay = regularPay + overtimePay + totalAllowances + manualAdjustment;
-    const netPay = grossPay - totalDeductions;
+    const netPay = grossPay;
 
     return {
       ...payslip,
@@ -1464,6 +1308,12 @@ const RecentTransactionsScreen = ({ navigation }) => {
       basePay: parseFloat(regularPay.toFixed(2)),
       regularPay: parseFloat(regularPay.toFixed(2)),
       overtimePay: parseFloat(overtimePay.toFixed(2)),
+      appointmentHours: payslip.staffType === 'nursing' && payslip.shiftPay !== undefined
+        ? Math.max(0, regularHours - sanitizeNumber(payslip.shiftHours))
+        : payslip.appointmentHours,
+      appointmentPay: payslip.staffType === 'nursing' && payslip.shiftPay !== undefined
+        ? Math.max(0, regularHours - sanitizeNumber(payslip.shiftHours)) * hourlyRate
+        : payslip.appointmentPay,
       allowances,
       totalAllowances: parseFloat(totalAllowances.toFixed(2)),
       manualAdjustment: parseFloat(manualAdjustment.toFixed(2)),
@@ -1686,8 +1536,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
     try {
       // In a real app, you'd fetch this from a persistent source.
       // For now, we'll filter the generated payslips.
-      const allPayslips = generateWeeklyPayslips();
-      const history = allPayslips.filter(p => (p.staffId === staffId || p.employeeId === staffId) && p.status === 'paid');
+      const history = payslips.filter(p => (p.staffId === staffId || p.employeeId === staffId) && p.status === 'paid');
       
       // Sort by most recent first
       history.sort((a, b) => new Date(b.payDate) - new Date(a.payDate));
@@ -1736,30 +1585,6 @@ const RecentTransactionsScreen = ({ navigation }) => {
           )}
         </TouchableOpacity>
       ))}
-    </View>
-  );
-
-  const SampleAvailablePayslip = () => (
-    <View style={[styles.payslipCard, styles.samplePayslipCard]}>
-      <View style={styles.payslipHeaderRow}>
-        <View style={styles.payslipInfo}>
-          <Text style={styles.staffName}>Sample Nurse</Text>
-          <Text style={styles.staffIdentifier}>NUR-001</Text>
-        </View>
-        <View style={styles.cardActionGroup}>
-          <TouchableOpacity
-            style={styles.cardActionGhost}
-            onPress={handleSamplePayslipView}
-          >
-            <MaterialCommunityIcons name="eye" size={16} color={COLORS.primary} />
-            <Text style={styles.cardActionGhostText}>View</Text>
-          </TouchableOpacity>
-          <View style={[styles.cardActionSolid, styles.cardActionDisabled]}>
-            <MaterialCommunityIcons name="credit-card" size={16} color={COLORS.white} />
-            <Text style={[styles.cardActionSolidText, styles.cardActionSolidTextDisabled]}>Mark Paid</Text>
-          </View>
-        </View>
-      </View>
     </View>
   );
 
@@ -2056,37 +1881,6 @@ const RecentTransactionsScreen = ({ navigation }) => {
                     keyboardType="numeric"
                   />
                 </View>
-              </View>
-
-              <Text style={[styles.formLabel, { marginTop: 12 }]}>Deductions</Text>
-              <View style={styles.formRow}>
-                <View style={styles.formColumn}>
-                  <Text style={styles.formLabelSmall}>Tax</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={payslipReviewForm.deductions.tax}
-                    onChangeText={(text) => updateReviewForm('tax', text, 'deductions')}
-                    keyboardType="numeric"
-                  />
-                </View>
-                <View style={styles.formColumn}>
-                  <Text style={styles.formLabelSmall}>NIS</Text>
-                  <TextInput
-                    style={styles.textInput}
-                    value={payslipReviewForm.deductions.nis}
-                    onChangeText={(text) => updateReviewForm('nis', text, 'deductions')}
-                    keyboardType="numeric"
-                  />
-                </View>
-              </View>
-              <View style={styles.formGroup}>
-                <Text style={styles.formLabelSmall}>Other Deductions</Text>
-                <TextInput
-                  style={styles.textInput}
-                  value={payslipReviewForm.deductions.other}
-                  onChangeText={(text) => updateReviewForm('other', text, 'deductions')}
-                  keyboardType="numeric"
-                />
               </View>
 
               <View style={styles.formGroup}>

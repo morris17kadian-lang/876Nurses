@@ -15,14 +15,13 @@ import TouchableWeb from '../components/TouchableWeb';
 import { useNotifications } from '../context/NotificationContext';
 import { useAuth } from '../context/AuthContext';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
-import ApiService from '../services/ApiService';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function NotificationSettingsScreen({ navigation }) {
   const { 
     pushPermissionStatus, 
     requestPushPermissions,
-    pushToken 
+    notificationPreferences,
+    saveNotificationPreferences,
   } = useNotifications();
   const { user } = useAuth();
 
@@ -32,85 +31,31 @@ export default function NotificationSettingsScreen({ navigation }) {
     appointments: true,
     reminders: true,
     serviceUpdates: true,
+    payments: true,
     systemNotifications: false,
     emailNotifications: true,
   });
 
-  // Load preferences from backend on mount
+  // Preferences are loaded per user by NotificationProvider and synced to Firestore.
   useEffect(() => {
-    loadNotificationPreferences();
-  }, [user]);
-
-  const loadNotificationPreferences = async () => {
-    try {
-      // Try backend first
-      if (user) {
-        try {
-          const response = await ApiService.makeRequest('/settings/preferences', { method: 'GET' });
-          if (response.success && response.data) {
-            setSettings({
-              pushNotifications: pushPermissionStatus === 'granted',
-              // chatMessages: response.data.chatMessages ?? true, // REMOVED
-              appointments: response.data.appointments ?? true,
-              reminders: response.data.reminders ?? true,
-              serviceUpdates: response.data.serviceUpdates ?? true,
-              systemNotifications: response.data.systemNotifications ?? false,
-              emailNotifications: response.data.emailNotifications ?? true,
-            });
-            return;
-          }
-        } catch (backendError) {
-          // Backend unavailable for notification preferences
-        }
-      }
-
-      // Fallback to AsyncStorage
-      const stored = await AsyncStorage.getItem('notificationPreferences');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setSettings(prev => ({ ...prev, ...parsed }));
-      }
-    } catch (error) {
-      console.error('Error loading notification preferences:', error);
-    }
-
-    // Update push notification status
     setSettings(prev => ({
       ...prev,
-      pushNotifications: pushPermissionStatus === 'granted'
+      ...notificationPreferences,
+      pushNotifications: pushPermissionStatus === 'granted' && notificationPreferences.pushNotifications !== false,
     }));
-  };
+  }, [user?.id, notificationPreferences, pushPermissionStatus]);
 
   const saveNotificationPreference = async (key, value) => {
     const newSettings = { ...settings, [key]: value };
     setSettings(newSettings);
-
-    try {
-      // Try backend first
-      if (user) {
-        try {
-          await ApiService.makeRequest('/settings/preferences', {
-            method: 'PUT',
-            body: JSON.stringify({ [key]: value })
-          });
-          // Notification preference synced to backend
-        } catch (backendError) {
-          // Backend sync failed, saved locally
-        }
-      }
-
-      // Always save to AsyncStorage as backup
-      await AsyncStorage.setItem('notificationPreferences', JSON.stringify(newSettings));
-    } catch (error) {
-      console.error('Error saving notification preference:', error);
-    }
+    await saveNotificationPreferences({ [key]: value });
   };
 
   const handlePushNotificationToggle = async (value) => {
     if (value && pushPermissionStatus !== 'granted') {
       Alert.alert(
         'Enable Push Notifications',
-        'Allow 876Nurses to send you important notifications about appointments, messages, and health reminders.',
+        'Allow 876Nurses to send you important notifications about appointments, payments, and health reminders.',
         [
           {
             text: 'Cancel',
@@ -122,6 +67,7 @@ export default function NotificationSettingsScreen({ navigation }) {
               const status = await requestPushPermissions();
               if (status === 'granted') {
                 setSettings(prev => ({ ...prev, pushNotifications: true }));
+                await saveNotificationPreferences({ pushNotifications: true });
               } else {
                 Alert.alert(
                   'Permission Denied',
@@ -135,6 +81,7 @@ export default function NotificationSettingsScreen({ navigation }) {
       );
     } else {
       setSettings(prev => ({ ...prev, pushNotifications: value }));
+      await saveNotificationPreferences({ pushNotifications: value });
       if (!value) {
         Alert.alert(
           'Notifications Disabled',
@@ -259,6 +206,16 @@ export default function NotificationSettingsScreen({ navigation }) {
               value={settings.serviceUpdates}
               onToggle={(value) => handleSettingToggle('serviceUpdates', value)}
               iconColor="#95E1D3"
+            />
+
+            <View style={styles.divider} />
+            <SettingRow
+              icon="credit-card-outline"
+              title="Payments and Invoices"
+              subtitle="Payment receipts, invoice updates, and overdue notices"
+              value={settings.payments}
+              onToggle={(value) => handleSettingToggle('payments', value)}
+              iconColor="#10B981"
             />
 
             <View style={styles.divider} />

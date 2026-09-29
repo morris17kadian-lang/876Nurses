@@ -12,7 +12,6 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,13 +19,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, GRADIENTS } from '../constants';
 import InvoiceService from '../services/InvoiceService';
 import { db } from '../config/firebase';
+import SharedSettingsService from '../services/SharedSettingsService';
 
 const PaymentSettingsScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const [viewMode, setViewMode] = useState('general'); // 'general', 'payroll', 'company'
 
-  const GENERAL_SETTINGS_STORAGE_KEY = 'adminPaymentGeneralSettings';
-  
   // State for settings
   const [paymentRemindersEnabled, setPaymentRemindersEnabled] = useState(true);
 
@@ -61,10 +59,6 @@ const PaymentSettingsScreen = ({ navigation }) => {
     },
     holidayMultiplier: 2,
     allowances: { transport: 0, meal: 0, phone: 0 },
-    deductions: { tax: 25, nis: 3, education: 2 },
-    taxEnabled: true,
-    healthInsurance: false,
-    pensionContribution: false,
   });
 
   // Company details for invoices
@@ -98,7 +92,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
     posAvailable: false
   });
 
-  // Load company details, payment info, and payroll settings from AsyncStorage on mount
+  // Load shared company, payment, and payroll settings on mount.
   useEffect(() => {
     loadCompanyDetails();
     loadPaymentInfo();
@@ -109,8 +103,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
 
   const loadGeneralSettings = async () => {
     try {
-      const stored = await AsyncStorage.getItem(GENERAL_SETTINGS_STORAGE_KEY);
-      const parsed = stored ? JSON.parse(stored) : {};
+      const parsed = (await SharedSettingsService.read('general')) || {};
 
       if (typeof parsed?.paymentRemindersEnabled === 'boolean') {
         setPaymentRemindersEnabled(parsed.paymentRemindersEnabled);
@@ -173,7 +166,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
         depositPercent,
         updatedAt: serverTimestamp(),
       }, { merge: true });
-      await AsyncStorage.setItem(GENERAL_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+      await SharedSettingsService.save('general', payload);
       Alert.alert('Success', 'General payment settings saved successfully');
     } catch (error) {
       console.error('Error saving general payment settings:', error);
@@ -208,9 +201,9 @@ const PaymentSettingsScreen = ({ navigation }) => {
 
   const loadPaymentInfo = async () => {
     try {
-      const stored = await AsyncStorage.getItem('paymentInfo');
-      if (stored) {
-        setPaymentInfo(JSON.parse(stored));
+      const shared = await SharedSettingsService.read('paymentInfo');
+      if (shared) {
+        setPaymentInfo(shared);
       }
     } catch (error) {
       console.error('Error loading payment info:', error);
@@ -219,7 +212,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
 
   const savePaymentInfo = async () => {
     try {
-      await AsyncStorage.setItem('paymentInfo', JSON.stringify(paymentInfo));
+      await SharedSettingsService.save('paymentInfo', paymentInfo);
       Alert.alert('Success', 'Payment information saved successfully');
     } catch (error) {
       console.error('Error saving payment info:', error);
@@ -227,13 +220,13 @@ const PaymentSettingsScreen = ({ navigation }) => {
     }
   };
 
-  // Load company details from AsyncStorage on mount
+  // Load shared company details.
 
   const loadCompanyDetails = async () => {
     try {
-      const stored = await AsyncStorage.getItem('companyDetails');
-      if (stored) {
-        setCompanyDetails(JSON.parse(stored));
+      const shared = await SharedSettingsService.read('company');
+      if (shared) {
+        setCompanyDetails(shared);
       }
     } catch (error) {
       console.error('Error loading company details:', error);
@@ -242,7 +235,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
 
   const saveCompanyDetails = async () => {
     try {
-      await AsyncStorage.setItem('companyDetails', JSON.stringify(companyDetails));
+      await SharedSettingsService.save('company', companyDetails);
       Alert.alert('Success', 'Company details saved successfully');
     } catch (error) {
       console.error('Error saving company details:', error);
@@ -256,9 +249,8 @@ const PaymentSettingsScreen = ({ navigation }) => {
 
   const loadPayrollSettings = async () => {
     try {
-      const stored = await AsyncStorage.getItem('adminPayrollSettings');
-      if (stored) {
-        const parsed = JSON.parse(stored);
+      const parsed = await SharedSettingsService.read('payroll');
+      if (parsed) {
         // Merge with defaults to ensure all keys exist
         setPayrollSettings((prev) => ({
           ...prev,
@@ -275,7 +267,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
 
   const savePayrollSettings = async () => {
     try {
-      await AsyncStorage.setItem('adminPayrollSettings', JSON.stringify(payrollSettings));
+      await SharedSettingsService.save('payroll', payrollSettings);
       Alert.alert('Success', 'Payroll settings saved successfully');
     } catch (error) {
       console.error('Error saving payroll settings:', error);

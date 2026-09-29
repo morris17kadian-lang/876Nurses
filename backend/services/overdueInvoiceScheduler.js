@@ -98,6 +98,25 @@ async function createNotification(db, data) {
   });
 }
 
+async function getNotificationPreferences(db, userId) {
+  if (!userId) return {};
+  try {
+    const snapshot = await db.collection('notificationPreferences').doc(String(userId)).get();
+    return snapshot.exists ? snapshot.data() || {} : {};
+  } catch (error) {
+    console.warn('[OverdueCron] Could not load notification preferences:', error.message);
+    return {};
+  }
+}
+
+function allowsPaymentNotification(preferences, channel) {
+  if (!preferences) return true;
+  if (channel === 'push' && preferences.pushNotifications === false) return false;
+  if (channel === 'email' && preferences.emailNotifications === false) return false;
+  if (preferences.payments === false) return false;
+  return true;
+}
+
 async function resolveUserContact(db, userId) {
   if (!userId) return null;
 
@@ -239,10 +258,21 @@ async function runOverdueJob(db) {
   const now = new Date();
   console.log(`[OverdueCron] Running overdue check at ${now.toISOString()}`);
 
+  const generalSettingsSnapshot = await db.collection('paymentSettings').doc('general').get();
+  const generalSettings = generalSettingsSnapshot.exists ? generalSettingsSnapshot.data() || {} : {};
+  if (generalSettings.paymentRemindersEnabled === false) {
+    console.log('[OverdueCron] Payment reminders are disabled in Payment Settings.');
+    return;
+  }
+  const firstReminderDay = Number.isFinite(Number(generalSettings.reminderDaysAfterDue))
+    ? Math.max(0, Number(generalSettings.reminderDaysAfterDue))
+    : 1;
+
   const invoicesSnapshot = await db.collection(COLLECTION_INVOICES).get();
   const overdueInvoices = invoicesSnapshot.docs
     .map(doc => ({ id: doc.id, ...doc.data() }))
     .filter(invoice => isInvoiceOverdue(invoice, now))
+    .filter(invoice => calculateDaysOverdue(invoice, now) >= firstReminderDay)
     .filter(invoice => shouldNotify(invoice, now));
 
   if (overdueInvoices.length === 0) {
@@ -267,6 +297,7 @@ async function runOverdueJob(db) {
       const clientName = invoice.clientName || invoice.patientName || 'Unknown Client';
       const clientEmail = invoice.clientEmail || invoice.patientEmail;
       const clientContact = patientId ? await resolveUserContact(db, patientId) : null;
+      const clientPreferences = patientId ? await getNotificationPreferences(db, patientId) : {};
       const resolvedClientEmail = clientEmail || clientContact?.email;
       const resolvedClientName = clientName || clientContact?.name || 'Unknown Client';
 
@@ -285,21 +316,23 @@ async function runOverdueJob(db) {
           },
         });
 
-        await sendExpoPush(
-          clientContact?.pushTokens,
-          'Payment Overdue',
-          `Invoice ${invoiceId} (${amountLabel}) is overdue. Please settle your account.`,
-          { invoiceId, amount, currency }
-        );
+        if (allowsPaymentNotification(clientPreferences, 'push')) {
+          await sendExpoPush(
+            clientContact?.pushTokens,
+            'Payment Overdue',
+            `Invoice ${invoiceId} (${amountLabel}) is overdue. Please settle your account.`,
+            { invoiceId, amount, currency }
+          );
 
-        await sendFcmPush(
-          collectFcmTokens(clientContact),
-          'Payment Overdue',
-          `Invoice ${invoiceId} (${amountLabel}) is overdue. Please settle your account.`,
-          { invoiceId, amount, currency }
-        );
+          await sendFcmPush(
+            collectFcmTokens(clientContact),
+            'Payment Overdue',
+            `Invoice ${invoiceId} (${amountLabel}) is overdue. Please settle your account.`,
+            { invoiceId, amount, currency }
+          );
+        }
 
-        await sendOverdueEmail({
+        if (allowsPaymentNotification(clientPreferences, 'email')) await sendOverdueEmail({
           to: resolvedClientEmail,
           subject: `Overdue Invoice ${invoiceId}`,
           html: `
@@ -334,20 +367,23 @@ async function runOverdueJob(db) {
           },
         });
 
-        const adminTokens = collectPushTokens(adminUser);
-        await sendExpoPush(
-          adminTokens,
-          'Overdue Payment Alert',
-          `Invoice ${invoiceId} for ${clientName} is overdue (${amountLabel}).`,
-          { invoiceId, amount, currency, patientId }
-        );
+        const adminPreferences = await getNotificationPreferences(db, adminUser.id);
+        if (allowsPaymentNotification(adminPreferences, 'push')) {
+          const adminTokens = collectPushTokens(adminUser);
+          await sendExpoPush(
+            adminTokens,
+            'Overdue Payment Alert',
+            `Invoice ${invoiceId} for ${clientName} is overdue (${amountLabel}).`,
+            { invoiceId, amount, currency, patientId }
+          );
 
-        await sendFcmPush(
-          collectFcmTokens(adminUser),
-          'Overdue Payment Alert',
-          `Invoice ${invoiceId} for ${clientName} is overdue (${amountLabel}).`,
-          { invoiceId, amount, currency, patientId }
-        );
+          await sendFcmPush(
+            collectFcmTokens(adminUser),
+            'Overdue Payment Alert',
+            `Invoice ${invoiceId} for ${clientName} is overdue (${amountLabel}).`,
+            { invoiceId, amount, currency, patientId }
+          );
+        }
 
         await sendOverdueEmail({
           to: adminUser.email,

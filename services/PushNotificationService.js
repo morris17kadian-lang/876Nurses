@@ -30,6 +30,16 @@ class PushNotificationService {
     this.expoPushToken = null;
     this.notificationListener = null;
     this.responseListener = null;
+    this.initializePromise = null;
+    this.notificationPreferences = {
+      pushNotifications: true,
+      appointments: true,
+      reminders: true,
+      serviceUpdates: true,
+      payments: true,
+      systemNotifications: false,
+      emailNotifications: true,
+    };
     this._warnedExpoGo = false;
   }
 
@@ -42,8 +52,29 @@ class PushNotificationService {
     );
   }
 
+  setNotificationPreferences(preferences) {
+    this.notificationPreferences = preferences && typeof preferences === 'object' ? preferences : null;
+  }
+
+  isNotificationAllowed(type) {
+    const preferences = this.notificationPreferences;
+    if (!preferences || preferences.pushNotifications === false) return false;
+    const normalizedType = String(type || '').toLowerCase();
+    // Chat notifications are intentionally disabled across the app.
+    if (/chat|message/.test(normalizedType)) return false;
+    if (/appointment|shift|assignment|coverage|clock|booking|schedule/.test(normalizedType)) return preferences.appointments !== false;
+    if (/reminder/.test(normalizedType)) return preferences.reminders !== false;
+    if (/service|store|order/.test(normalizedType)) return preferences.serviceUpdates !== false;
+    if (/payment|invoice|payslip|financial/.test(normalizedType)) return preferences.payments !== false;
+    if (/system|general/.test(normalizedType)) return preferences.systemNotifications === true;
+    return true;
+  }
+
   // Initialize push notifications
   async initialize() {
+    if (this.initializePromise) return this.initializePromise;
+
+    this.initializePromise = (async () => {
     try {
       // Skip push notifications in Expo Go on Android
       if (isExpoGo && Platform.OS === 'android') {
@@ -56,20 +87,35 @@ class PushNotificationService {
       this.expoPushToken = token;
 
       // Listen for incoming notifications
-      this.notificationListener = Notifications.addNotificationReceivedListener(
-        this.handleNotificationReceived
-      );
+      if (!this.notificationListener) {
+        this.notificationListener = Notifications.addNotificationReceivedListener(
+          this.handleNotificationReceived
+        );
+      }
 
       // Listen for notification interactions
-      this.responseListener = Notifications.addNotificationResponseReceivedListener(
-        this.handleNotificationResponse
-      );
+      if (!this.responseListener) {
+        this.responseListener = Notifications.addNotificationResponseReceivedListener(
+          this.handleNotificationResponse
+        );
+      }
+
+      if (typeof Notifications.getLastNotificationResponseAsync === 'function') {
+        const lastResponse = await Notifications.getLastNotificationResponseAsync();
+        if (lastResponse) this.handleNotificationResponse(lastResponse);
+        if (typeof Notifications.clearLastNotificationResponseAsync === 'function') {
+          await Notifications.clearLastNotificationResponseAsync();
+        }
+      }
 
       return token;
     } catch (error) {
       // console.error('Failed to initialize push notifications:', error);
       return null;
     }
+    })();
+
+    return this.initializePromise;
   }
 
   // Register device for push notifications
@@ -116,8 +162,8 @@ class PushNotificationService {
         token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
         // Push token obtained
       } catch (e) {
-        // console.error('❌ Error getting push token:', e);
-        token = `${e}`;
+        console.warn('Failed to obtain Expo push token:', e?.message || e);
+        token = null;
       }
     } else {
       // Must use physical device for Push Notifications
@@ -144,9 +190,16 @@ class PushNotificationService {
       screen: data?.screen || 'Notifications',
       params: data || {}
     };
-    
+    if (this.navigationHandler) {
+      const handled = this.navigationHandler(this.pendingNavigation);
+      if (handled) this.pendingNavigation = null;
+    }
     // Navigation queued
   };
+
+  setNavigationHandler(handler) {
+    this.navigationHandler = typeof handler === 'function' ? handler : null;
+  }
 
   // Get and clear pending navigation (called by app when ready)
   getPendingNavigation() {
@@ -158,6 +211,7 @@ class PushNotificationService {
   // Send local notification (immediate)
   async sendLocalNotification(title, body, data = {}) {
     try {
+      if (!this.isNotificationAllowed(data?.type)) return null;
       this.warnIfExpoGoOnce();
       // Sending local notification
       
@@ -182,6 +236,7 @@ class PushNotificationService {
   // Schedule notification for later
   async scheduleNotification(title, body, scheduledTime, data = {}) {
     try {
+      if (!this.isNotificationAllowed(data?.type)) return null;
       this.warnIfExpoGoOnce();
       const triggerDate = scheduledTime instanceof Date
         ? scheduledTime
@@ -303,6 +358,7 @@ class PushNotificationService {
   async sendOverduePaymentNotification(notificationData) {
     try {
       const { title, body, data } = notificationData;
+      if (!this.isNotificationAllowed(data?.type || 'overdue_payment')) return;
       
       await Notifications.scheduleNotificationAsync({
         content: {
@@ -342,12 +398,29 @@ class PushNotificationService {
 
   // Cleanup listeners
   cleanup() {
-    if (this.notificationListener) {
-      Notifications.removeNotificationSubscription(this.notificationListener);
+    const removeListener = (subscription) => {
+      if (!subscription) return;
+
+      // Expo notification subscriptions expose `.remove()` in current SDKs.
+      // Keep the module-level remover as a guarded fallback for older versions.
+      if (typeof subscription.remove === 'function') {
+        subscription.remove();
+      } else if (typeof Notifications.removeNotificationSubscription === 'function') {
+        Notifications.removeNotificationSubscription(subscription);
+      }
+    };
+
+    try {
+      removeListener(this.notificationListener);
+      removeListener(this.responseListener);
+    } catch (error) {
+      // A failed native listener cleanup must not crash sign-out or app startup.
+      console.warn('Failed to remove notification listeners:', error?.message || error);
     }
-    if (this.responseListener) {
-      Notifications.removeNotificationSubscription(this.responseListener);
-    }
+
+    this.notificationListener = null;
+    this.responseListener = null;
+    this.initializePromise = null;
   }
 }
 
