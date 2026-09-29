@@ -389,17 +389,14 @@ export const NotificationProvider = ({ children }) => {
     updateUnreadCount(updatedNotifications);
     await saveNotifications(updatedNotifications);
 
-    // Send local push notification - request permissions if needed
+    // Only show local alerts after the user has granted OS notification access.
+    // Permission is requested explicitly from Notification Settings.
     try {
       if (notificationPreferences.pushNotifications === false || !notificationTypeEnabled(newNotification.data?.type || newNotification.type)) {
         return newNotification;
       }
-      let permissionStatus = pushPermissionStatus;
-      if (permissionStatus !== 'granted') {
-        // Requesting notification permissions for local notification
-        permissionStatus = await requestPushPermissions();
-      }
-      
+      if (pushPermissionStatus !== 'granted') return newNotification;
+
       // Send local notification
       await PushNotificationService.sendLocalNotification(
         newNotification.title,

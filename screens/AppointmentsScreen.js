@@ -1860,7 +1860,7 @@ export default function AppointmentsScreen({ navigation, route }) {
 
               <View style={styles.pdfTotalsSection}>
                 <View style={styles.pdfTotalRow}>
-                  <Text style={styles.pdfTotalLabel}>Deposit:</Text>
+                  <Text style={styles.pdfTotalLabel}>Subtotal:</Text>
                   <Text style={styles.pdfTotalValue}>${invoice.total || invoice.amount}</Text>
                 </View>
                 <View style={styles.pdfBlueLine} />

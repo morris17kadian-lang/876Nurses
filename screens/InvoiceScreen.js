@@ -738,7 +738,7 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
                 {/* Totals Section */}
                 <View style={styles.pdfTotalsSection}>
                   <View style={styles.pdfTotalRow}>
-                    <Text style={styles.pdfTotalLabel}>Deposit:</Text>
+                    <Text style={styles.pdfTotalLabel}>Subtotal:</Text>
                     <Text style={styles.pdfTotalValue}>
                       {formatInvoiceMoney(invoiceData.subtotal || invoiceData.amount || invoiceData.total || 0)}
                     </Text>

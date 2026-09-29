@@ -79,11 +79,17 @@ class PushNotificationService {
       // Skip push notifications in Expo Go on Android
       if (isExpoGo && Platform.OS === 'android') {
         // Push notifications disabled in Expo Go on Android
+        this.initializePromise = null;
         return null;
       }
 
       // Register for push notifications
       const token = await this.registerForPushNotificationsAsync();
+      if (!token) {
+        // A missing permission/token is recoverable when the user later opts in.
+        this.initializePromise = null;
+        return null;
+      }
       this.expoPushToken = token;
 
       // Listen for incoming notifications
@@ -111,6 +117,7 @@ class PushNotificationService {
       return token;
     } catch (error) {
       // console.error('Failed to initialize push notifications:', error);
+      this.initializePromise = null;
       return null;
     }
     })();
@@ -137,15 +144,10 @@ class PushNotificationService {
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
       // Existing permission status
       
-      let finalStatus = existingStatus;
+      const finalStatus = existingStatus;
       
-      if (existingStatus !== 'granted') {
-        // Requesting notification permissions
-        const { status } = await Notifications.requestPermissionsAsync();
-        finalStatus = status;
-        // Permission request result
-      }
-      
+      // Sign-in/background initialization must not trigger a permission prompt.
+      // The user opts in from Notification Settings, which requests permission.
       if (finalStatus !== 'granted') {
         // Failed to get push token for push notification
         return null;
@@ -338,6 +340,10 @@ class PushNotificationService {
   async requestPermissions() {
     try {
       const { status } = await Notifications.requestPermissionsAsync();
+      if (status === 'granted' && !this.expoPushToken) {
+        // Clear a previous no-permission result so explicit opt-in can retry.
+        this.initializePromise = null;
+      }
       return status;
     } catch (error) {
       // console.error('Failed to request permissions:', error);

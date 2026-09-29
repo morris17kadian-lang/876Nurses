@@ -4318,6 +4318,11 @@ export default function AdminDashboardScreen({ navigation, route }) {
             subject: 'Your Recurring Care Schedule is Confirmed',
             html,
             text,
+            meta: {
+              type: 'appointment_confirmation',
+              notificationUserId: selectedShiftRequest.clientUserId || selectedShiftRequest.userId || selectedShiftRequest.clientUid || selectedShiftRequest.patientUid || selectedShiftRequest.requestedByUid || selectedShiftRequest.patientId || selectedShiftRequest.clientId,
+              notificationCategory: 'appointments',
+            },
           });
         } catch (err) {
           console.error('Failed to send email to patient:', err);

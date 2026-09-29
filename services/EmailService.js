@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import FirebaseEmailQueueService from './FirebaseEmailQueueService';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { app } from '../config/firebase';
 
 /**
  * Email Service for sending emails via Gmail API or SMTP
@@ -56,6 +58,19 @@ class EmailService {
     }
   }
 
+  static async isNotificationEmailAllowed(meta = {}) {
+    const userId = meta.notificationUserId;
+    const category = meta.notificationCategory;
+    if (!userId || !category) return true;
+
+    const checkPreference = httpsCallable(
+      getFunctions(app, 'us-central1'),
+      'canSendEmailNotification'
+    );
+    const response = await checkPreference({ userId: String(userId), category });
+    return response?.data?.allowed === true;
+  }
+
   /**
    * Send email via backend API
    * @param {Object} emailData - Email data
@@ -72,6 +87,13 @@ class EmailService {
       }
 
       const { to, subject, html, text, attachments = [], meta } = emailData || {};
+
+      if (meta?.notificationUserId && meta?.notificationCategory) {
+        const allowed = await this.isNotificationEmailAllowed(meta);
+        if (!allowed) {
+          return { success: true, skipped: true, reason: 'Recipient email notifications are disabled.' };
+        }
+      }
 
       if (!to || !subject || (!html && !text)) {
         return { success: false, error: 'Missing required email fields' };
@@ -371,7 +393,12 @@ class EmailService {
         to,
         subject,
         html,
-        text: `Appointment Reminder\n\nPatient: ${appointmentData.patientName || 'Client'}\nDate: ${appointmentData.date}\nTime: ${appointmentData.time}\nService: ${appointmentData.service}\nLocation: ${appointmentData.address}\n\nNeed help? Email 876nurses@gmail.com`
+        text: `Appointment Reminder\n\nPatient: ${appointmentData.patientName || 'Client'}\nDate: ${appointmentData.date}\nTime: ${appointmentData.time}\nService: ${appointmentData.service}\nLocation: ${appointmentData.address}\n\nNeed help? Email 876nurses@gmail.com`,
+        meta: {
+          type: 'appointment_reminder',
+          notificationUserId: appointmentData.userId || appointmentData.patientId || appointmentData.clientId || appointmentData.createdByUid,
+          notificationCategory: 'appointments',
+        }
       });
     } catch (error) {
       console.error('Error sending appointment reminder:', error);

@@ -1250,6 +1250,37 @@ const notificationPreferenceAllows = (prefs, type) => {
   return true;
 };
 
+exports.canSendEmailNotification = onCall({
+  region: 'us-central1',
+  serviceAccount: getRuntimeServiceAccountEmail(),
+}, async (request) => {
+  if (!request.auth?.uid) throw new HttpsError('unauthenticated', 'Sign in to check email preferences.');
+
+  const targetUserId = String(request.data?.userId || '').trim();
+  const category = String(request.data?.category || '').trim();
+  const allowedCategories = new Set(['appointments', 'reminders', 'serviceUpdates', 'payments', 'systemNotifications']);
+  if (!targetUserId || !allowedCategories.has(category)) {
+    throw new HttpsError('invalid-argument', 'A recipient and valid notification category are required.');
+  }
+
+  const sender = await getUserProfile(request.auth.uid);
+  if (!sender) throw new HttpsError('permission-denied', 'A verified user profile is required.');
+  const senderRole = normalizeString(sender.role);
+  const senderIsAdmin = senderRole === 'admin' || senderRole === 'superadmin';
+  if (targetUserId !== request.auth.uid && !senderIsAdmin) {
+    throw new HttpsError('permission-denied', 'You may only check your own email preferences.');
+  }
+
+  const preferenceSnapshot = await admin.firestore()
+    .collection('notificationPreferences')
+    .doc(targetUserId)
+    .get();
+  const preferences = preferenceSnapshot.exists ? preferenceSnapshot.data() || {} : {};
+  return {
+    allowed: preferences.emailNotifications !== false && preferences[category] !== false,
+  };
+});
+
 exports.sendAppNotification = onCall({
   region: 'us-central1',
   serviceAccount: getRuntimeServiceAccountEmail(),

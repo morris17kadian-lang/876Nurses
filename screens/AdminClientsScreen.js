@@ -2706,7 +2706,7 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
 
                     <View style={styles.pdfTotalsSection}>
                       <View style={styles.pdfTotalRow}>
-                        <Text style={styles.pdfTotalLabel}>Deposit:</Text>
+                        <Text style={styles.pdfTotalLabel}>Subtotal:</Text>
                         <Text style={styles.pdfTotalValue}>{InvoiceService.formatCurrency(currentInvoiceData.total)}</Text>
                       </View>
                       <View style={styles.pdfBlueLine} />

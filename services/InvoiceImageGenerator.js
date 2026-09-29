@@ -211,7 +211,7 @@ class InvoiceImageGenerator {
   
   <!-- Total Section -->
   <rect x="500" y="${totalSectionY}" width="234" height="120" fill="#f8f9fa" stroke="#ddd"/>
-    <text x="520" y="${totalSectionY + 25}" class="body-text" font-size="14" fill="#333">Deposit:</text>
+    <text x="520" y="${totalSectionY + 25}" class="body-text" font-size="14" fill="#333">Subtotal:</text>
   <text x="710" y="${totalSectionY + 25}" class="body-text" font-size="14" fill="#333" text-anchor="end">${formatCurrency(invoiceData.subtotal)}</text>
   <text x="520" y="${totalSectionY + 50}" class="body-text" font-size="14" fill="#333">Tax (Healthcare):</text>
   <text x="710" y="${totalSectionY + 50}" class="body-text" font-size="14" fill="#333" text-anchor="end">${formatCurrency(invoiceData.tax || 0)}</text>

@@ -1200,7 +1200,7 @@ class InvoiceService {
 
           <div class="total-section">
             <div class="total-row">
-              <div class="total-label">Deposit:</div>
+              <div class="total-label">Subtotal:</div>
               <div class="total-amount">${formatJMD(total)}</div>
             </div>
             <div class="total-row grand-total">

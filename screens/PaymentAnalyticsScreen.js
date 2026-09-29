@@ -178,8 +178,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
 
       // Cache invoices for reuse elsewhere (e.g., client performance)
       const now = new Date();
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      
       // Parse date strings in format "Feb 15, 2026" or ISO format
       const parseInvoiceDate = (dateStr) => {
         if (!dateStr) return null;
@@ -211,57 +209,49 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         return parsed;
       };
       
-      // Helper to determine if invoice falls in current period
+      const getPeriodBounds = (periodName, referenceDate) => {
+        const start = new Date(referenceDate);
+        start.setHours(0, 0, 0, 0);
+
+        if (periodName === 'daily') {
+          return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 1) };
+        }
+        if (periodName === 'weekly') {
+          start.setDate(start.getDate() - start.getDay());
+          return { start, end: new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7) };
+        }
+        if (periodName === 'monthly') {
+          start.setDate(1);
+          return { start, end: new Date(start.getFullYear(), start.getMonth() + 1, 1) };
+        }
+        if (periodName === 'yearly') {
+          start.setMonth(0, 1);
+          return { start, end: new Date(start.getFullYear() + 1, 0, 1) };
+        }
+        return null;
+      };
+
+      const currentPeriodBounds = getPeriodBounds(period, now);
+      const previousPeriodBounds = currentPeriodBounds
+        ? getPeriodBounds(period, new Date(currentPeriodBounds.start.getTime() - 1))
+        : null;
+
+      // Exclude future-dated records from current analytics.
       const isInCurrentPeriod = (invoiceDate) => {
         const invDate = parseInvoiceDate(invoiceDate);
         if (!invDate || isNaN(invDate.getTime())) return false;
-        
-        switch (period) {
-          case 'daily':
-            return invDate >= startOfToday;
-          case 'weekly':
-            const startOfWeek = new Date(startOfToday);
-            startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay());
-            return invDate >= startOfWeek;
-          case 'monthly':
-            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-            return invDate >= startOfMonth;
-          case 'yearly':
-            const startOfYear = new Date(now.getFullYear(), 0, 1);
-            return invDate >= startOfYear;
-          default:
-            return true;
-        }
+        if (!currentPeriodBounds) return true;
+        return invDate >= currentPeriodBounds.start && invDate < currentPeriodBounds.end && invDate <= now;
       };
 
       const isInPreviousPeriod = (invoiceDate) => {
         const invDate = parseInvoiceDate(invoiceDate);
         if (!invDate || isNaN(invDate.getTime())) return false;
-        
-        switch (period) {
-          case 'daily':
-            const yesterday = new Date(startOfToday);
-            yesterday.setDate(yesterday.getDate() - 1);
-            const dayBeforeYesterday = new Date(yesterday);
-            dayBeforeYesterday.setDate(dayBeforeYesterday.getDate() - 1);
-            return invDate >= dayBeforeYesterday && invDate < yesterday;
-          case 'weekly':
-            const startOfLastWeek = new Date(startOfToday);
-            startOfLastWeek.setDate(startOfToday.getDate() - startOfToday.getDay() - 7);
-            const endOfLastWeek = new Date(startOfLastWeek);
-            endOfLastWeek.setDate(startOfLastWeek.getDate() + 7);
-            return invDate >= startOfLastWeek && invDate < endOfLastWeek;
-          case 'monthly':
-            const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-            const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
-            return invDate >= startOfLastMonth && invDate <= endOfLastMonth;
-          case 'yearly':
-            const startOfLastYear = new Date(now.getFullYear() - 1, 0, 1);
-            const endOfLastYear = new Date(now.getFullYear() - 1, 11, 31);
-            return invDate >= startOfLastYear && invDate <= endOfLastYear;
-          default:
-            return false;
-        }
+        return Boolean(
+          previousPeriodBounds &&
+          invDate >= previousPeriodBounds.start &&
+          invDate < previousPeriodBounds.end
+        );
       };
 
       const toIsoString = (value) => {
