@@ -224,15 +224,32 @@ export default function InvoiceManagementScreen({ navigation }) {
           return appointmentId != null && ids.includes(String(appointmentId));
         })
       : null;
+    const linkedAccountType = String(
+      linkedAppointment?.clientAccountType ||
+      linkedAppointment?.accountType ||
+      linkedAppointment?.customerType ||
+      ''
+    ).trim().toLowerCase();
+    const linkedClientId = String(
+      linkedAppointment?.clientId ||
+      linkedAppointment?.patientId ||
+      linkedAppointment?.userId ||
+      ''
+    ).trim().toLowerCase();
 
     const isGuest =
       invoice?.isGuestBooking === true ||
       invoice?.isGuest === true ||
       invoice?.guestBooking === true ||
       linkedAppointment?.isGuestBooking === true ||
+      linkedAppointment?.isGuest === true ||
+      linkedAppointment?.guestBooking === true ||
       explicitType === 'guest' ||
+      linkedAccountType === 'guest' ||
       clientId.startsWith('guest_') ||
-      clientId.includes('@');
+      clientId.includes('@') ||
+      linkedClientId.startsWith('guest_') ||
+      linkedClientId.includes('@');
 
     return isGuest
       ? { key: 'guest', label: 'Guest' }
