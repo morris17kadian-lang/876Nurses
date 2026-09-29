@@ -299,12 +299,7 @@ export default function AdminProfileScreen({ navigation }) {
         resizeMode="contain"
       />
 
-      <ScrollView
-        style={styles.content}
-        contentContainerStyle={styles.contentContainer}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Profile Card */}
         <View style={styles.profileCard}>
           <View style={styles.profileHeader}>
@@ -652,10 +647,8 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-  },
-  contentContainer: {
     paddingHorizontal: 20,
-    paddingTop: 20,
+    marginTop: -10,
   },
   sectionDivider: {
     height: 2,
