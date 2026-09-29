@@ -308,15 +308,15 @@ export default function AdminProfileScreen({ navigation }) {
                 <Image source={{ uri: profilePhoto }} style={styles.avatar} />
               ) : (
                 <View style={styles.avatarPlaceholder}>
-                  <MaterialCommunityIcons name="account-tie" size={40} color={COLORS.white} />
+                  <MaterialCommunityIcons name="account-tie" size={64} color={COLORS.white} />
                 </View>
               )}
             </View>
             <View style={styles.profileInfo}>
-              <Text style={styles.profileName}>{formData.username}</Text>
+              <Text style={styles.profileName}>{formData.username || 'Administrator'}</Text>
               <Text style={styles.adminRole}>{formData.title || 'Administrator'}</Text>
               <Text style={styles.department}>{formData.department}</Text>
-              <Text style={styles.employeeCode}>ID: {formData.employeeId}</Text>
+              {!!formData.employeeId && <Text style={styles.employeeCode}>ID: {formData.employeeId}</Text>}
             </View>
           </View>
         </View>
@@ -660,6 +660,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 16,
     padding: 20,
+    paddingVertical: 30,
+    alignItems: 'center',
     marginBottom: 20,
     shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 4 },
@@ -668,49 +670,70 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   profileHeader: {
-    flexDirection: 'row',
     alignItems: 'center',
+    width: '100%',
   },
   avatarContainer: {
-    marginRight: 16,
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: COLORS.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 4,
+    borderColor: COLORS.white,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 4,
+    marginBottom: 16,
   },
   avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: '100%',
+    height: '100%',
   },
   avatarPlaceholder: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: '100%',
+    height: '100%',
+    borderRadius: 60,
     backgroundColor: COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   profileInfo: {
-    flex: 1,
+    alignItems: 'center',
+    width: '100%',
   },
   profileName: {
-    fontSize: 20,
-    fontWeight: 'bold',
+    fontSize: 24,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.text,
     marginBottom: 4,
+    textAlign: 'center',
   },
   adminRole: {
-    fontSize: 14,
+    fontSize: 16,
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.primary,
     fontWeight: '600',
     marginBottom: 2,
+    textAlign: 'center',
   },
   department: {
     fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
     color: COLORS.textMuted,
     marginBottom: 2,
+    textAlign: 'center',
   },
   employeeCode: {
     fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.textLight,
     fontWeight: '500',
+    textAlign: 'center',
   },
   editInfo: {
     flexDirection: 'row',
